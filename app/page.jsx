@@ -16,7 +16,7 @@ const PUBLIC_WS_URL =
   'wss://api.derivws.com/trading/v1/options/ws/public';
 
 const INPUT_CLASS =
-  'w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm text-slate-100 font-mono';
+  'w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm text-slate-100 font-mono disabled:opacity-50';
 
 export default function BinarySpotPro() {
   // ============================================================
@@ -87,13 +87,17 @@ export default function BinarySpotPro() {
   const [takeProfit, setTakeProfit] = useState('10.00');
   const [stopLoss, setStopLoss] = useState('20.00');
 
-  const [
-    maxConsecutiveLosses,
-    setMaxConsecutiveLosses,
-  ] = useState('3');
+  const [maxConsecutiveLosses, setMaxConsecutiveLosses] =
+    useState('3');
+
+  // New risk controls
+  const [maxStake, setMaxStake] = useState('10.00');
+  const [maxTrades, setMaxTrades] = useState('10');
+  const [cooldownSeconds, setCooldownSeconds] =
+    useState('2');
 
   // ============================================================
-  // AUTO BOT
+  // BOT SESSION
   // ============================================================
 
   const [isAutoBotRunning, setIsAutoBotRunning] =
@@ -102,17 +106,19 @@ export default function BinarySpotPro() {
   const [autoBotStatus, setAutoBotStatus] =
     useState('Standby');
 
+  const [emergencyStopped, setEmergencyStopped] =
+    useState(false);
+
   const [totalProfit, setTotalProfit] = useState(0);
   const [tradeCount, setTradeCount] = useState(0);
   const [winCount, setWinCount] = useState(0);
   const [lossCount, setLossCount] = useState(0);
 
-  const [
-    consecutiveLosses,
-    setConsecutiveLosses,
-  ] = useState(0);
+  const [consecutiveLosses, setConsecutiveLosses] =
+    useState(0);
 
   const [botLogs, setBotLogs] = useState([]);
+  const [tradeHistory, setTradeHistory] = useState([]);
 
   // ============================================================
   // PROPOSAL
@@ -121,11 +127,9 @@ export default function BinarySpotPro() {
   const [proposalLoading, setProposalLoading] =
     useState(false);
 
-  const [proposalError, setProposalError] =
-    useState('');
+  const [proposalError, setProposalError] = useState('');
 
-  const [proposalData, setProposalData] =
-    useState(null);
+  const [proposalData, setProposalData] = useState(null);
 
   // ============================================================
   // CONTRACT
@@ -159,22 +163,34 @@ export default function BinarySpotPro() {
   const requestIdRef = useRef(1000);
 
   const autoBotRunningRef = useRef(false);
+  const emergencyStoppedRef = useRef(false);
+
   const totalProfitRef = useRef(0);
+  const tradeCountRef = useRef(0);
   const currentStakeRef = useRef(1);
   const consecutiveLossesRef = useRef(0);
 
-  const settledContractRef = useRef(null);
+  const accountTypeRef = useRef('');
+  const currencyRef = useRef('USD');
 
+  const settledContractRef = useRef(null);
   const botTimerRef = useRef(null);
 
   useEffect(() => {
-    autoBotRunningRef.current =
-      isAutoBotRunning;
+    autoBotRunningRef.current = isAutoBotRunning;
   }, [isAutoBotRunning]);
+
+  useEffect(() => {
+    emergencyStoppedRef.current = emergencyStopped;
+  }, [emergencyStopped]);
 
   useEffect(() => {
     totalProfitRef.current = totalProfit;
   }, [totalProfit]);
+
+  useEffect(() => {
+    tradeCountRef.current = tradeCount;
+  }, [tradeCount]);
 
   useEffect(() => {
     currentStakeRef.current =
@@ -185,6 +201,14 @@ export default function BinarySpotPro() {
     consecutiveLossesRef.current =
       consecutiveLosses;
   }, [consecutiveLosses]);
+
+  useEffect(() => {
+    accountTypeRef.current = accountType;
+  }, [accountType]);
+
+  useEffect(() => {
+    currencyRef.current = currency;
+  }, [currency]);
 
   const nextReqId = () => {
     requestIdRef.current += 1;
@@ -197,8 +221,7 @@ export default function BinarySpotPro() {
 
   const addBotLog = useCallback(
     (message, type = 'info') => {
-      const time =
-        new Date().toLocaleTimeString();
+      const time = new Date().toLocaleTimeString();
 
       setBotLogs((previous) => [
         {
@@ -206,7 +229,7 @@ export default function BinarySpotPro() {
           message,
           type,
         },
-        ...previous.slice(0, 99),
+        ...previous.slice(0, 119),
       ]);
     },
     []
@@ -235,6 +258,55 @@ export default function BinarySpotPro() {
     },
     [addBotLog]
   );
+
+  // ============================================================
+  // EMERGENCY STOP
+  // ============================================================
+
+  const emergencyStop = useCallback(() => {
+    emergencyStoppedRef.current = true;
+
+    setEmergencyStopped(true);
+
+    autoBotRunningRef.current = false;
+    setIsAutoBotRunning(false);
+
+    if (botTimerRef.current) {
+      clearTimeout(botTimerRef.current);
+      botTimerRef.current = null;
+    }
+
+    setAutoBotStatus('EMERGENCY STOP ACTIVATED');
+
+    addBotLog(
+      'EMERGENCY STOP: No new contracts will be purchased. Any open contract will be allowed to settle.',
+      'error'
+    );
+  }, [addBotLog]);
+
+  const clearEmergencyStop = () => {
+    if (
+      activeContract &&
+      !activeContract.isSold
+    ) {
+      setBuyError(
+        'Wait for the active contract to settle before clearing Emergency Stop.'
+      );
+
+      return;
+    }
+
+    emergencyStoppedRef.current = false;
+    setEmergencyStopped(false);
+
+    setAutoBotStatus('Standby');
+    setBuyError('');
+
+    addBotLog(
+      'Emergency Stop cleared.',
+      'system'
+    );
+  };
 
   // ============================================================
   // TRADING SOCKET CLEANUP
@@ -266,19 +338,16 @@ export default function BinarySpotPro() {
   }, []);
 
   // ============================================================
-  // BUILD PROPOSAL PAYLOAD
+  // BUILD PROPOSAL
   // ============================================================
 
   const buildProposalPayload = useCallback(
     (stakeAmount) => {
-      const parsedStake =
-        Number(stakeAmount);
+      const parsedStake = Number(stakeAmount);
+      const parsedDuration = Number(duration);
+      const prediction = Number(predictionDigit);
 
-      const parsedDuration =
-        Number(duration);
-
-      const prediction =
-        Number(predictionDigit);
+      const parsedMaxStake = Number(maxStake);
 
       if (
         !Number.isFinite(parsedStake) ||
@@ -286,6 +355,20 @@ export default function BinarySpotPro() {
       ) {
         throw new Error(
           'Stake must be greater than zero.'
+        );
+      }
+
+      if (
+        Number.isFinite(parsedMaxStake) &&
+        parsedMaxStake > 0 &&
+        parsedStake > parsedMaxStake
+      ) {
+        throw new Error(
+          `Stake ${parsedStake.toFixed(
+            2
+          )} exceeds your maximum stake of ${parsedMaxStake.toFixed(
+            2
+          )}.`
         );
       }
 
@@ -320,29 +403,24 @@ export default function BinarySpotPro() {
       const payload = {
         proposal: 1,
 
-        amount:
-          Number(
-            parsedStake.toFixed(2)
-          ),
+        amount: Number(
+          parsedStake.toFixed(2)
+        ),
 
         basis: 'stake',
 
-        contract_type:
-          strategy,
+        contract_type: strategy,
 
         currency:
-          currency || 'USD',
+          currencyRef.current || 'USD',
 
-        duration:
-          parsedDuration,
+        duration: parsedDuration,
 
         duration_unit: 't',
 
-        underlying_symbol:
-          symbol,
+        underlying_symbol: symbol,
 
-        req_id:
-          nextReqId(),
+        req_id: nextReqId(),
       };
 
       if (
@@ -363,293 +441,414 @@ export default function BinarySpotPro() {
       strategy,
       duration,
       predictionDigit,
-      currency,
       symbol,
+      maxStake,
     ]
   );
 
   // ============================================================
-  // AUTO REQUEST PROPOSAL
+  // AUTO PROPOSAL
   // ============================================================
 
-  const requestAutoProposal =
-    useCallback(() => {
+  const requestAutoProposal = useCallback(() => {
+    if (!autoBotRunningRef.current) {
+      return;
+    }
+
+    if (emergencyStoppedRef.current) {
+      stopAutoBot('Emergency Stop active');
+      return;
+    }
+
+    if (accountTypeRef.current !== 'demo') {
+      stopAutoBot(
+        'Real account protection triggered'
+      );
+
+      return;
+    }
+
+    const parsedMaxTrades =
+      Math.max(
+        1,
+        Number(maxTrades) || 1
+      );
+
+    if (
+      tradeCountRef.current >=
+      parsedMaxTrades
+    ) {
+      stopAutoBot(
+        `Maximum trades reached (${parsedMaxTrades})`
+      );
+
+      return;
+    }
+
+    const ws = tradingWsRef.current;
+
+    if (
+      !ws ||
+      ws.readyState !== WebSocket.OPEN
+    ) {
+      stopAutoBot(
+        'Trading socket disconnected'
+      );
+
+      return;
+    }
+
+    try {
+      const stakeAmount =
+        currentStakeRef.current;
+
+      const payload =
+        buildProposalPayload(
+          stakeAmount
+        );
+
+      setProposalLoading(true);
+
+      setAutoBotStatus(
+        `Requesting proposal — ${currencyRef.current} ${stakeAmount.toFixed(
+          2
+        )}`
+      );
+
+      addBotLog(
+        `AUTO proposal | ${strategy} | ${symbol} | Stake ${currencyRef.current} ${stakeAmount.toFixed(
+          2
+        )}`,
+        'trade'
+      );
+
+      ws.send(
+        JSON.stringify(payload)
+      );
+    } catch (error) {
+      stopAutoBot(
+        error.message ||
+          'Proposal setup error'
+      );
+    }
+  }, [
+    buildProposalPayload,
+    maxTrades,
+    strategy,
+    symbol,
+    stopAutoBot,
+    addBotLog,
+  ]);
+
+  // ============================================================
+  // SETTLEMENT
+  // ============================================================
+
+  const handleSettledContract = useCallback(
+    (contract) => {
+      const contractId =
+        contract.contract_id;
+
       if (
-        !autoBotRunningRef.current
+        settledContractRef.current ===
+        contractId
       ) {
         return;
       }
 
-      if (accountType !== 'demo') {
-        stopAutoBot(
-          'Real account protection triggered'
+      settledContractRef.current =
+        contractId;
+
+      const profit = Number(
+        contract.profit ?? 0
+      );
+
+      const safeProfit =
+        Number.isFinite(profit)
+          ? profit
+          : 0;
+
+      const previousStake =
+        Number(
+          contract.buy_price ??
+            currentStakeRef.current
+        ) || currentStakeRef.current;
+
+      const newTotal = Number(
+        (
+          totalProfitRef.current +
+          safeProfit
+        ).toFixed(2)
+      );
+
+      totalProfitRef.current = newTotal;
+      setTotalProfit(newTotal);
+
+      const nextTradeCount =
+        tradeCountRef.current + 1;
+
+      tradeCountRef.current =
+        nextTradeCount;
+
+      setTradeCount(
+        nextTradeCount
+      );
+
+      const won =
+        safeProfit > 0;
+
+      setTradeHistory((previous) => [
+        {
+          id: contractId,
+
+          result: won
+            ? 'WIN'
+            : safeProfit < 0
+            ? 'LOSS'
+            : 'DRAW',
+
+          profit: safeProfit,
+
+          stake: previousStake,
+
+          strategy:
+            contract.contract_type ||
+            strategy,
+
+          symbol,
+
+          time:
+            new Date().toLocaleTimeString(),
+        },
+        ...previous.slice(0, 49),
+      ]);
+
+      if (won) {
+        setWinCount(
+          (value) => value + 1
         );
 
-        return;
-      }
+        consecutiveLossesRef.current = 0;
+        setConsecutiveLosses(0);
 
-      const ws =
-        tradingWsRef.current;
+        const resetStake =
+          Number(baseStake) || 1;
 
-      if (
-        !ws ||
-        ws.readyState !==
-          WebSocket.OPEN
-      ) {
-        stopAutoBot(
-          'Trading socket disconnected'
+        currentStakeRef.current =
+          resetStake;
+
+        setCurrentStake(
+          resetStake.toFixed(2)
         );
 
-        return;
-      }
+        addBotLog(
+          `WIN +${safeProfit.toFixed(
+            2
+          )} ${contract.currency || currencyRef.current} | Net ${
+            newTotal >= 0 ? '+' : ''
+          }${newTotal.toFixed(2)}`,
+          'success'
+        );
+      } else {
+        setLossCount(
+          (value) => value + 1
+        );
 
-      try {
-        const stakeAmount =
-          currentStakeRef.current;
+        const nextLosses =
+          consecutiveLossesRef.current +
+          1;
 
-        const payload =
-          buildProposalPayload(
-            stakeAmount
+        consecutiveLossesRef.current =
+          nextLosses;
+
+        setConsecutiveLosses(
+          nextLosses
+        );
+
+        const multiplier =
+          Math.max(
+            1,
+            Number(martingale) || 1
           );
 
-        setAutoBotStatus(
-          `Requesting proposal — ${currency} ${stakeAmount.toFixed(
+        const proposedNextStake =
+          Number(
+            (
+              currentStakeRef.current *
+              multiplier
+            ).toFixed(2)
+          );
+
+        const parsedMaxStake =
+          Number(maxStake);
+
+        if (
+          Number.isFinite(parsedMaxStake) &&
+          parsedMaxStake > 0 &&
+          proposedNextStake >
+            parsedMaxStake
+        ) {
+          addBotLog(
+            `Next Martingale stake ${proposedNextStake.toFixed(
+              2
+            )} exceeds maximum stake ${parsedMaxStake.toFixed(
+              2
+            )}.`,
+            'error'
+          );
+
+          stopAutoBot(
+            'Maximum stake protection triggered'
+          );
+
+          return;
+        }
+
+        currentStakeRef.current =
+          proposedNextStake;
+
+        setCurrentStake(
+          proposedNextStake.toFixed(2)
+        );
+
+        addBotLog(
+          `LOSS ${safeProfit.toFixed(
+            2
+          )} ${contract.currency || currencyRef.current} | Next stake ${proposedNextStake.toFixed(
+            2
+          )}`,
+          'error'
+        );
+      }
+
+      const tp =
+        Number(takeProfit);
+
+      const sl =
+        Number(stopLoss);
+
+      const maxLosses =
+        Math.max(
+          1,
+          Number(
+            maxConsecutiveLosses
+          ) || 1
+        );
+
+      const parsedMaxTrades =
+        Math.max(
+          1,
+          Number(maxTrades) || 1
+        );
+
+      if (
+        Number.isFinite(tp) &&
+        tp > 0 &&
+        newTotal >= tp
+      ) {
+        stopAutoBot(
+          `Take Profit reached: +${newTotal.toFixed(
             2
           )}`
         );
 
-        addBotLog(
-          `AUTO proposal | ${strategy} | ${symbol} | Stake ${currency} ${stakeAmount.toFixed(
+        return;
+      }
+
+      if (
+        Number.isFinite(sl) &&
+        sl > 0 &&
+        newTotal <= -sl
+      ) {
+        stopAutoBot(
+          `Stop Loss reached: ${newTotal.toFixed(
             2
-          )}`,
-          'trade'
+          )}`
         );
 
-        ws.send(
-          JSON.stringify(payload)
-        );
-      } catch (error) {
-        stopAutoBot(
-          error.message ||
-            'Proposal setup error'
-        );
+        return;
       }
-    }, [
-      accountType,
-      buildProposalPayload,
-      currency,
+
+      if (
+        !won &&
+        consecutiveLossesRef.current >=
+          maxLosses
+      ) {
+        stopAutoBot(
+          `Maximum consecutive losses reached (${maxLosses})`
+        );
+
+        return;
+      }
+
+      if (
+        nextTradeCount >=
+        parsedMaxTrades
+      ) {
+        stopAutoBot(
+          `Maximum trades reached (${parsedMaxTrades})`
+        );
+
+        return;
+      }
+
+      if (
+        emergencyStoppedRef.current
+      ) {
+        stopAutoBot(
+          'Emergency Stop active'
+        );
+
+        return;
+      }
+
+      if (
+        autoBotRunningRef.current
+      ) {
+        const cooldown =
+          Math.max(
+            0,
+            Number(
+              cooldownSeconds
+            ) || 0
+          );
+
+        setAutoBotStatus(
+          cooldown > 0
+            ? `Cooldown ${cooldown}s before next trade`
+            : 'Preparing next trade...'
+        );
+
+        botTimerRef.current =
+          setTimeout(() => {
+            if (
+              autoBotRunningRef.current &&
+              !emergencyStoppedRef.current
+            ) {
+              requestAutoProposal();
+            }
+          }, cooldown * 1000);
+      }
+    },
+    [
       strategy,
       symbol,
-      stopAutoBot,
+      baseStake,
+      martingale,
+      maxStake,
+      takeProfit,
+      stopLoss,
+      maxConsecutiveLosses,
+      maxTrades,
+      cooldownSeconds,
       addBotLog,
-    ]);
+      stopAutoBot,
+      requestAutoProposal,
+    ]
+  );
 
   // ============================================================
-  // HANDLE SETTLED CONTRACT
-  // ============================================================
-
-  const handleSettledContract =
-    useCallback(
-      (contract) => {
-        const contractId =
-          contract.contract_id;
-
-        if (
-          settledContractRef.current ===
-          contractId
-        ) {
-          return;
-        }
-
-        settledContractRef.current =
-          contractId;
-
-        const profit =
-          Number(
-            contract.profit ?? 0
-          );
-
-        const safeProfit =
-          Number.isFinite(profit)
-            ? profit
-            : 0;
-
-        const newTotal =
-          Number(
-            (
-              totalProfitRef.current +
-              safeProfit
-            ).toFixed(2)
-          );
-
-        totalProfitRef.current =
-          newTotal;
-
-        setTotalProfit(newTotal);
-
-        setTradeCount(
-          (value) => value + 1
-        );
-
-        if (safeProfit > 0) {
-          setWinCount(
-            (value) => value + 1
-          );
-
-          setConsecutiveLosses(0);
-          consecutiveLossesRef.current = 0;
-
-          const resetStake =
-            Number(baseStake) || 1;
-
-          currentStakeRef.current =
-            resetStake;
-
-          setCurrentStake(
-            resetStake.toFixed(2)
-          );
-
-          addBotLog(
-            `WIN +${safeProfit.toFixed(
-              2
-            )} ${contract.currency || currency} | Net ${
-              newTotal >= 0 ? '+' : ''
-            }${newTotal.toFixed(2)}`,
-            'success'
-          );
-        } else {
-          setLossCount(
-            (value) => value + 1
-          );
-
-          const nextLosses =
-            consecutiveLossesRef.current +
-            1;
-
-          consecutiveLossesRef.current =
-            nextLosses;
-
-          setConsecutiveLosses(
-            nextLosses
-          );
-
-          const multiplier =
-            Math.max(
-              1,
-              Number(martingale) || 1
-            );
-
-          const nextStake =
-            Number(
-              (
-                currentStakeRef.current *
-                multiplier
-              ).toFixed(2)
-            );
-
-          currentStakeRef.current =
-            nextStake;
-
-          setCurrentStake(
-            nextStake.toFixed(2)
-          );
-
-          addBotLog(
-            `LOSS ${safeProfit.toFixed(
-              2
-            )} ${contract.currency || currency} | Next stake ${nextStake.toFixed(
-              2
-            )}`,
-            'error'
-          );
-        }
-
-        const tp =
-          Number(takeProfit);
-
-        const sl =
-          Number(stopLoss);
-
-        const maxLosses =
-          Math.max(
-            1,
-            Number(
-              maxConsecutiveLosses
-            ) || 1
-          );
-
-        if (
-          Number.isFinite(tp) &&
-          tp > 0 &&
-          newTotal >= tp
-        ) {
-          stopAutoBot(
-            `Take Profit reached: +${newTotal.toFixed(
-              2
-            )}`
-          );
-
-          return;
-        }
-
-        if (
-          Number.isFinite(sl) &&
-          sl > 0 &&
-          newTotal <= -sl
-        ) {
-          stopAutoBot(
-            `Stop Loss reached: ${newTotal.toFixed(
-              2
-            )}`
-          );
-
-          return;
-        }
-
-        if (
-          safeProfit <= 0 &&
-          consecutiveLossesRef.current >=
-            maxLosses
-        ) {
-          stopAutoBot(
-            `Maximum consecutive losses reached (${maxLosses})`
-          );
-
-          return;
-        }
-
-        if (
-          autoBotRunningRef.current
-        ) {
-          setAutoBotStatus(
-            'Waiting for next trade...'
-          );
-
-          botTimerRef.current =
-            setTimeout(() => {
-              if (
-                autoBotRunningRef.current
-              ) {
-                requestAutoProposal();
-              }
-            }, 800);
-        }
-      },
-      [
-        baseStake,
-        martingale,
-        takeProfit,
-        stopLoss,
-        maxConsecutiveLosses,
-        currency,
-        addBotLog,
-        stopAutoBot,
-        requestAutoProposal,
-      ]
-    );
-
-  // ============================================================
-  // CONNECT AUTH TRADING SOCKET
+  // AUTHENTICATED TRADING SOCKET
   // ============================================================
 
   const connectTradingSocket = useCallback(
@@ -674,7 +873,6 @@ export default function BinarySpotPro() {
           'system'
         );
 
-        // Balance stream
         ws.send(
           JSON.stringify({
             balance: 1,
@@ -703,9 +901,9 @@ export default function BinarySpotPro() {
           const data =
             JSON.parse(event.data);
 
-          // ====================================================
+          // --------------------------------
           // ERROR
-          // ====================================================
+          // --------------------------------
 
           if (data.error) {
             const message =
@@ -713,8 +911,7 @@ export default function BinarySpotPro() {
               'Deriv rejected the request.';
 
             if (
-              data.echo_req?.proposal ===
-              1
+              data.echo_req?.proposal === 1
             ) {
               setProposalLoading(false);
               setProposalError(message);
@@ -756,13 +953,12 @@ export default function BinarySpotPro() {
             return;
           }
 
-          // ====================================================
+          // --------------------------------
           // BALANCE
-          // ====================================================
+          // --------------------------------
 
           if (
-            data.msg_type ===
-              'balance' &&
+            data.msg_type === 'balance' &&
             data.balance
           ) {
             setBalance(
@@ -773,15 +969,18 @@ export default function BinarySpotPro() {
               data.balance.currency ||
                 'USD'
             );
+
+            currencyRef.current =
+              data.balance.currency ||
+              'USD';
           }
 
-          // ====================================================
+          // --------------------------------
           // PROPOSAL
-          // ====================================================
+          // --------------------------------
 
           if (
-            data.msg_type ===
-              'proposal' &&
+            data.msg_type === 'proposal' &&
             data.proposal
           ) {
             setProposalLoading(false);
@@ -790,12 +989,22 @@ export default function BinarySpotPro() {
               data.proposal
             );
 
-            // Auto bot: immediately buy proposal
             if (
               autoBotRunningRef.current
             ) {
               if (
-                accountType !== 'demo'
+                emergencyStoppedRef.current
+              ) {
+                stopAutoBot(
+                  'Emergency Stop active'
+                );
+
+                return;
+              }
+
+              if (
+                accountTypeRef.current !==
+                'demo'
               ) {
                 stopAutoBot(
                   'Real account purchase blocked'
@@ -827,6 +1036,8 @@ export default function BinarySpotPro() {
                 'Buying demo contract...'
               );
 
+              setBuyLoading(true);
+
               ws.send(
                 JSON.stringify({
                   buy:
@@ -849,13 +1060,12 @@ export default function BinarySpotPro() {
             );
           }
 
-          // ====================================================
+          // --------------------------------
           // BUY
-          // ====================================================
+          // --------------------------------
 
           if (
-            data.msg_type ===
-              'buy' &&
+            data.msg_type === 'buy' &&
             data.buy
           ) {
             setBuyLoading(false);
@@ -887,11 +1097,10 @@ export default function BinarySpotPro() {
               buyPrice:
                 data.buy.buy_price ??
                 data.buy.price ??
-                null,
+                currentStakeRef.current,
 
               transactionId:
-                data.buy
-                  .transaction_id ??
+                data.buy.transaction_id ??
                 null,
 
               isSold: false,
@@ -929,9 +1138,9 @@ export default function BinarySpotPro() {
             );
           }
 
-          // ====================================================
-          // CONTRACT MONITOR
-          // ====================================================
+          // --------------------------------
+          // CONTRACT
+          // --------------------------------
 
           if (
             data.msg_type ===
@@ -1005,9 +1214,7 @@ export default function BinarySpotPro() {
               })
             );
 
-            if (
-              contract.is_sold
-            ) {
+            if (contract.is_sold) {
               const finalStatus =
                 contract.status ||
                 (safeProfit > 0
@@ -1061,26 +1268,38 @@ export default function BinarySpotPro() {
                 settledContractRef.current =
                   contract.contract_id;
 
+                const manualProfit =
+                  Number(
+                    contract.profit ??
+                      0
+                  );
+
+                const safeManualProfit =
+                  Number.isFinite(
+                    manualProfit
+                  )
+                    ? manualProfit
+                    : 0;
+
                 addBotLog(
                   `Demo contract settled | ${
-                    safeProfit >= 0
+                    safeManualProfit >=
+                    0
                       ? '+'
                       : ''
-                  }${safeProfit.toFixed(
+                  }${safeManualProfit.toFixed(
                     2
                   )} ${
                     contract.currency ||
-                    currency
+                    currencyRef.current
                   }`,
-                  safeProfit > 0
+                  safeManualProfit > 0
                     ? 'success'
                     : 'error'
                 );
               }
             } else {
-              setContractStatus(
-                'LIVE'
-              );
+              setContractStatus('LIVE');
             }
           }
         } catch (error) {
@@ -1116,8 +1335,6 @@ export default function BinarySpotPro() {
       };
     },
     [
-      accountType,
-      currency,
       addBotLog,
       closeTradingSocket,
       handleSettledContract,
@@ -1220,6 +1437,9 @@ export default function BinarySpotPro() {
           data.account.type || ''
         );
 
+        accountTypeRef.current =
+          data.account.type || '';
+
         setBalance(
           data.account.balance ??
             null
@@ -1230,9 +1450,14 @@ export default function BinarySpotPro() {
             'USD'
         );
 
-        stopAutoBot(
-          'Account session loaded'
-        );
+        currencyRef.current =
+          data.account.currency ||
+          'USD';
+
+        autoBotRunningRef.current =
+          false;
+
+        setIsAutoBotRunning(false);
 
         setProposalData(null);
         setProposalError('');
@@ -1276,7 +1501,6 @@ export default function BinarySpotPro() {
     [
       closeTradingSocket,
       connectTradingSocket,
-      stopAutoBot,
     ]
   );
 
@@ -1327,15 +1551,15 @@ export default function BinarySpotPro() {
     closeTradingSocket,
   ]);
 
-  // ============================================================
-  // ACCOUNT SWITCH
-  // ============================================================
-
   const isContractOpen =
     Boolean(
       activeContract &&
         !activeContract.isSold
     );
+
+  // ============================================================
+  // ACCOUNT SWITCH
+  // ============================================================
 
   const switchAccount =
     async (newAccountId) => {
@@ -1347,9 +1571,7 @@ export default function BinarySpotPro() {
         return;
       }
 
-      if (
-        isContractOpen
-      ) {
+      if (isContractOpen) {
         setAuthError(
           'Wait for the active contract to settle before switching accounts.'
         );
@@ -1367,7 +1589,7 @@ export default function BinarySpotPro() {
     };
 
   // ============================================================
-  // MARKET STATISTICS
+  // DIGIT STATS
   // ============================================================
 
   const updateDigitStats =
@@ -1433,7 +1655,7 @@ export default function BinarySpotPro() {
     }, []);
 
   // ============================================================
-  // PUBLIC MARKET CONNECTION
+  // PUBLIC MARKET
   // ============================================================
 
   const connectMarket =
@@ -1467,9 +1689,7 @@ export default function BinarySpotPro() {
 
         ws.send(
           JSON.stringify({
-            ticks:
-              symbol,
-
+            ticks: symbol,
             subscribe: 1,
           })
         );
@@ -1486,7 +1706,7 @@ export default function BinarySpotPro() {
           setInterval(() => {
             if (
               ws.readyState ===
-                WebSocket.OPEN
+              WebSocket.OPEN
             ) {
               ws.send(
                 JSON.stringify({
@@ -1770,6 +1990,16 @@ export default function BinarySpotPro() {
       setProposalError('');
       setProposalData(null);
 
+      if (
+        emergencyStoppedRef.current
+      ) {
+        setProposalError(
+          'Emergency Stop is active.'
+        );
+
+        return;
+      }
+
       const ws =
         tradingWsRef.current;
 
@@ -1822,7 +2052,17 @@ export default function BinarySpotPro() {
       setBuyError('');
 
       if (
-        accountType !==
+        emergencyStoppedRef.current
+      ) {
+        setBuyError(
+          'Emergency Stop is active.'
+        );
+
+        return;
+      }
+
+      if (
+        accountTypeRef.current !==
         'demo'
       ) {
         setBuyError(
@@ -1857,6 +2097,19 @@ export default function BinarySpotPro() {
           proposalData.ask_price
         );
 
+      if (
+        !Number.isFinite(
+          price
+        ) ||
+        price <= 0
+      ) {
+        setBuyError(
+          'Invalid proposal price.'
+        );
+
+        return;
+      }
+
       const ws =
         tradingWsRef.current;
 
@@ -1888,13 +2141,23 @@ export default function BinarySpotPro() {
     };
 
   // ============================================================
-  // START AUTO BOT
+  // START BOT
   // ============================================================
 
   const startAutoBot =
     () => {
       if (
-        accountType !==
+        emergencyStoppedRef.current
+      ) {
+        setBuyError(
+          'Clear Emergency Stop before starting.'
+        );
+
+        return;
+      }
+
+      if (
+        accountTypeRef.current !==
         'demo'
       ) {
         setBuyError(
@@ -1924,17 +2187,44 @@ export default function BinarySpotPro() {
         return;
       }
 
-      const stake =
+      const startingStake =
         Number(baseStake);
+
+      const parsedMaxStake =
+        Number(maxStake);
 
       if (
         !Number.isFinite(
-          stake
+          startingStake
         ) ||
-        stake <= 0
+        startingStake <= 0
       ) {
         setBuyError(
           'Enter a valid base stake.'
+        );
+
+        return;
+      }
+
+      if (
+        !Number.isFinite(
+          parsedMaxStake
+        ) ||
+        parsedMaxStake <= 0
+      ) {
+        setBuyError(
+          'Enter a valid maximum stake.'
+        );
+
+        return;
+      }
+
+      if (
+        startingStake >
+        parsedMaxStake
+      ) {
+        setBuyError(
+          'Base stake cannot be greater than maximum stake.'
         );
 
         return;
@@ -1944,23 +2234,27 @@ export default function BinarySpotPro() {
       setProposalError('');
 
       setTradeCount(0);
+      tradeCountRef.current = 0;
+
       setWinCount(0);
       setLossCount(0);
+
       setConsecutiveLosses(0);
 
       consecutiveLossesRef.current =
         0;
 
       setTotalProfit(0);
-      totalProfitRef.current =
-        0;
+      totalProfitRef.current = 0;
+
+      setTradeHistory([]);
 
       setCurrentStake(
-        stake.toFixed(2)
+        startingStake.toFixed(2)
       );
 
       currentStakeRef.current =
-        stake;
+        startingStake;
 
       settledContractRef.current =
         null;
@@ -1981,7 +2275,13 @@ export default function BinarySpotPro() {
         'system'
       );
 
-      requestAutoProposal();
+      setTimeout(() => {
+        if (
+          autoBotRunningRef.current
+        ) {
+          requestAutoProposal();
+        }
+      }, 100);
     };
 
   // ============================================================
@@ -1991,23 +2291,30 @@ export default function BinarySpotPro() {
   const resetSessionStats =
     () => {
       if (
-        isAutoBotRunning
+        isAutoBotRunning ||
+        isContractOpen
       ) {
         return;
       }
 
       setTradeCount(0);
+      tradeCountRef.current = 0;
+
       setWinCount(0);
       setLossCount(0);
+
       setConsecutiveLosses(0);
 
-      setTotalProfit(0);
-      totalProfitRef.current =
+      consecutiveLossesRef.current =
         0;
 
+      setTotalProfit(0);
+      totalProfitRef.current = 0;
+
+      setTradeHistory([]);
+
       const base =
-        Number(baseStake) ||
-        1;
+        Number(baseStake) || 1;
 
       currentStakeRef.current =
         base;
@@ -2021,6 +2328,10 @@ export default function BinarySpotPro() {
       setAutoBotStatus(
         'Standby'
       );
+
+      setProposalData(null);
+      setProposalError('');
+      setBuyError('');
     };
 
   // ============================================================
@@ -2065,12 +2376,11 @@ export default function BinarySpotPro() {
 
   return (
     <main className="min-h-screen bg-[#080b11] text-slate-100">
+      {/* STATUS BAR */}
 
       <div className="border-b border-slate-800 bg-[#0e131d] px-4 py-2.5">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
-
           <div className="flex items-center gap-4">
-
             <StatusDot
               active={
                 isMarketConnected
@@ -2089,16 +2399,22 @@ export default function BinarySpotPro() {
                 activeClass="bg-cyan-400"
               />
             )}
-
           </div>
 
           <div className="flex items-center gap-4 font-mono">
-
             <span className="text-slate-500">
               {symbol}
             </span>
 
-            <span className="text-emerald-400 font-black">
+            <span
+              className={`font-black ${
+                lastTick !== null &&
+                prevTick !== null &&
+                lastTick >= prevTick
+                  ? 'text-emerald-400'
+                  : 'text-rose-400'
+              }`}
+            >
               {formattedQuote}
             </span>
 
@@ -2106,23 +2422,20 @@ export default function BinarySpotPro() {
               {lastDigit ??
                 '-'}
             </span>
-
           </div>
-
         </div>
       </div>
 
+      {/* HEADER */}
+
       <header className="border-b border-slate-800 bg-[#0d121c]">
         <div className="max-w-7xl mx-auto px-4 py-4 flex flex-wrap items-center justify-between gap-4">
-
           <div className="flex items-center gap-3">
-
             <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-black text-xl font-black">
               BS
             </div>
 
             <div>
-
               <div className="font-black text-lg">
                 BINARY
                 <span className="text-emerald-400">
@@ -2134,9 +2447,7 @@ export default function BinarySpotPro() {
               <p className="text-[9px] uppercase tracking-widest text-emerald-500 font-bold">
                 Algorithmic Hub
               </p>
-
             </div>
-
           </div>
 
           {!isAuthorized ? (
@@ -2148,13 +2459,12 @@ export default function BinarySpotPro() {
                 isLoading ||
                 isConnecting
               }
-              className="px-4 py-3 rounded-xl bg-emerald-500 text-black font-black text-xs"
+              className="px-4 py-3 rounded-xl bg-emerald-500 text-black font-black text-xs disabled:opacity-40"
             >
               CONNECT DERIV
             </button>
           ) : (
             <div className="flex flex-wrap items-center gap-3">
-
               {accounts.length >
                 1 && (
                 <select
@@ -2213,16 +2523,15 @@ export default function BinarySpotPro() {
                   currency
                 }
               />
-
             </div>
           )}
-
         </div>
       </header>
 
+      {/* NAV */}
+
       <div className="border-b border-slate-800 bg-[#0b1019]">
         <div className="max-w-7xl mx-auto px-4 py-2 flex gap-2 overflow-x-auto">
-
           {[
             [
               'overview',
@@ -2231,6 +2540,10 @@ export default function BinarySpotPro() {
             [
               'bots',
               '🤖 Bot Studio',
+            ],
+            [
+              'history',
+              '📜 History',
             ],
             [
               'analyzer',
@@ -2256,38 +2569,36 @@ export default function BinarySpotPro() {
               </button>
             )
           )}
-
         </div>
       </div>
 
       <section className="max-w-7xl mx-auto px-4 py-8">
-
         {authError && (
           <Alert>
             ⚠️ {authError}
           </Alert>
         )}
 
+        {/* OVERVIEW */}
+
         {activeTab ===
           'overview' && (
           <div className="space-y-6">
-
             <div className="bg-[#0f1522] border border-slate-800 rounded-3xl p-8 md:p-12">
-
               <span className="inline-flex border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 rounded-full px-3 py-1 text-xs font-black">
                 BinarySpot Pro
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Automated Demo Trading Engine.
+                Automated Demo Trading With Risk Controls.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                Live Deriv pricing, automated demo purchases,
-                contract monitoring, P/L tracking and risk
-                controls are now integrated.
+                Live Deriv execution, contract monitoring,
+                Martingale protection, maximum stake,
+                session trade limits, cooldowns and emergency
+                controls.
               </p>
-
             </div>
 
             <div
@@ -2297,7 +2608,6 @@ export default function BinarySpotPro() {
                   : 'border-rose-500/30 bg-rose-500/5'
               }`}
             >
-
               <p
                 className={`text-xs uppercase font-black ${
                   isDemoAccount
@@ -2311,80 +2621,50 @@ export default function BinarySpotPro() {
               </p>
 
               <p className="mt-2 text-sm text-slate-400">
-                {isDemoAccount
-                  ? 'Automated contract purchases use virtual funds only.'
-                  : 'Switch to your Demo account to enable automated testing.'}
+                Real-money purchases remain disabled.
               </p>
-
             </div>
-
           </div>
         )}
+
+        {/* BOT STUDIO */}
 
         {activeTab ===
           'bots' && (
           <div className="space-y-6">
-
             <div className="flex flex-wrap justify-between gap-4">
-
               <div>
-
                 <h2 className="text-xl font-black">
                   Bot Studio
                 </h2>
 
                 <p className="text-xs text-slate-400 mt-1">
-                  Automated Demo execution with live P/L and circuit breakers.
+                  Demo automation with hard session limits.
                 </p>
-
               </div>
 
               <span
                 className={`px-3 py-1.5 rounded-full text-xs font-black ${
-                  isAutoBotRunning
+                  emergencyStopped
+                    ? 'bg-rose-500/20 text-rose-400'
+                    : isAutoBotRunning
                     ? 'bg-emerald-500/15 text-emerald-400'
                     : 'bg-slate-800 text-slate-400'
                 }`}
               >
-                {isAutoBotRunning
+                {emergencyStopped
+                  ? 'EMERGENCY STOP'
+                  : isAutoBotRunning
                   ? 'AUTO BOT ACTIVE'
                   : 'STANDBY'}
               </span>
-
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
               <div className="lg:col-span-2 bg-[#0f1522] border border-slate-800 rounded-2xl p-6 space-y-6">
-
-                <div
-                  className={`p-4 rounded-xl border ${
-                    isDemoAccount
-                      ? 'border-cyan-500/30 bg-cyan-500/5'
-                      : 'border-rose-500/30 bg-rose-500/5'
-                  }`}
-                >
-
-                  <p
-                    className={`text-xs uppercase font-black ${
-                      isDemoAccount
-                        ? 'text-cyan-400'
-                        : 'text-rose-400'
-                    }`}
-                  >
-                    {isDemoAccount
-                      ? 'Demo Only Automation'
-                      : 'Real Account Protection'}
-                  </p>
-
-                  <p className="text-xs text-slate-400 mt-1">
-                    Real-money automated purchases are disabled in this build.
-                  </p>
-
-                </div>
+                {/* Settings */}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-
                   <Field label="Synthetic Asset">
                     <select
                       value={
@@ -2512,6 +2792,80 @@ export default function BinarySpotPro() {
                       }
                       readOnly
                       className={`${INPUT_CLASS} text-amber-400`}
+                    />
+                  </Field>
+
+                  <Field label="Maximum Stake">
+                    <input
+                      type="number"
+                      min="0.35"
+                      step="0.01"
+                      value={
+                        maxStake
+                      }
+                      onChange={(
+                        event
+                      ) =>
+                        setMaxStake(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isAutoBotRunning
+                      }
+                      className={
+                        INPUT_CLASS
+                      }
+                    />
+                  </Field>
+
+                  <Field label="Maximum Trades">
+                    <input
+                      type="number"
+                      min="1"
+                      value={
+                        maxTrades
+                      }
+                      onChange={(
+                        event
+                      ) =>
+                        setMaxTrades(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isAutoBotRunning
+                      }
+                      className={
+                        INPUT_CLASS
+                      }
+                    />
+                  </Field>
+
+                  <Field label="Cooldown (Seconds)">
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={
+                        cooldownSeconds
+                      }
+                      onChange={(
+                        event
+                      ) =>
+                        setCooldownSeconds(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isAutoBotRunning
+                      }
+                      className={
+                        INPUT_CLASS
+                      }
                     />
                   </Field>
 
@@ -2661,7 +3015,6 @@ export default function BinarySpotPro() {
                       }
                     />
                   </Field>
-
                 </div>
 
                 {buyError && (
@@ -2676,8 +3029,9 @@ export default function BinarySpotPro() {
                   </Alert>
                 )}
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Main controls */}
 
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {!isAutoBotRunning ? (
                     <button
                       onClick={
@@ -2686,7 +3040,8 @@ export default function BinarySpotPro() {
                       disabled={
                         !isDemoAccount ||
                         !isTradingConnected ||
-                        isContractOpen
+                        isContractOpen ||
+                        emergencyStopped
                       }
                       className="py-4 bg-emerald-500 disabled:opacity-40 text-black font-black rounded-xl"
                     >
@@ -2699,28 +3054,55 @@ export default function BinarySpotPro() {
                           'Stopped manually'
                         )
                       }
-                      className="py-4 bg-rose-600 text-white font-black rounded-xl"
+                      className="py-4 bg-amber-500 text-black font-black rounded-xl"
                     >
-                      ⏹ STOP AUTO BOT
+                      ⏹ STOP AFTER CURRENT TRADE
                     </button>
                   )}
 
                   <button
                     onClick={
-                      resetSessionStats
+                      emergencyStop
                     }
                     disabled={
-                      isAutoBotRunning
+                      emergencyStopped
                     }
-                    className="py-4 bg-slate-800 disabled:opacity-40 font-black rounded-xl"
+                    className="py-4 bg-rose-600 disabled:opacity-40 text-white font-black rounded-xl"
                   >
-                    RESET SESSION
+                    🛑 EMERGENCY STOP
                   </button>
-
                 </div>
 
-                <div className="border border-slate-800 rounded-2xl p-5">
+                {emergencyStopped && (
+                  <button
+                    onClick={
+                      clearEmergencyStop
+                    }
+                    disabled={
+                      isContractOpen
+                    }
+                    className="w-full py-3 bg-slate-700 disabled:opacity-40 font-black rounded-xl"
+                  >
+                    CLEAR EMERGENCY STOP
+                  </button>
+                )}
 
+                <button
+                  onClick={
+                    resetSessionStats
+                  }
+                  disabled={
+                    isAutoBotRunning ||
+                    isContractOpen
+                  }
+                  className="w-full py-3 bg-slate-800 disabled:opacity-40 font-black rounded-xl"
+                >
+                  RESET SESSION
+                </button>
+
+                {/* Status */}
+
+                <div className="border border-slate-800 rounded-2xl p-5">
                   <p className="text-[10px] uppercase font-black text-slate-500">
                     Auto Bot Status
                   </p>
@@ -2728,16 +3110,14 @@ export default function BinarySpotPro() {
                   <p className="mt-2 font-mono text-cyan-400 font-black">
                     {autoBotStatus}
                   </p>
-
                 </div>
+
+                {/* Contract monitor */}
 
                 {activeContract && (
                   <div className="border border-amber-500/30 bg-amber-500/5 rounded-2xl p-5">
-
                     <div className="flex justify-between flex-wrap gap-3">
-
                       <div>
-
                         <p className="text-xs uppercase font-black text-amber-400">
                           Contract Monitor
                         </p>
@@ -2748,7 +3128,6 @@ export default function BinarySpotPro() {
                             activeContract.contractId
                           }
                         </p>
-
                       </div>
 
                       <span className="px-3 py-1 rounded-full bg-slate-800 text-xs font-black">
@@ -2756,11 +3135,9 @@ export default function BinarySpotPro() {
                           contractStatus
                         }
                       </span>
-
                     </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
-
                       <StatBox
                         label="Buy Price"
                         value={
@@ -2812,22 +3189,21 @@ export default function BinarySpotPro() {
                             : 'text-rose-400'
                         }
                       />
-
                     </div>
-
                   </div>
                 )}
 
-                {!isAutoBotRunning &&
-                  !isContractOpen && (
-                    <div className="border-t border-slate-800 pt-6">
+                {/* Manual demo tools */}
 
+                {!isAutoBotRunning &&
+                  !isContractOpen &&
+                  !emergencyStopped && (
+                    <div className="border-t border-slate-800 pt-6">
                       <p className="text-xs uppercase font-black text-slate-500 mb-3">
                         Manual Demo Test
                       </p>
 
                       <div className="grid sm:grid-cols-2 gap-3">
-
                         <button
                           onClick={
                             requestLiveProposal
@@ -2858,34 +3234,23 @@ export default function BinarySpotPro() {
                             ? 'BUYING...'
                             : 'BUY DEMO CONTRACT'}
                         </button>
-
                       </div>
-
                     </div>
                   )}
-
               </div>
 
+              {/* SESSION PERFORMANCE */}
+
               <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5">
+                <h3 className="text-xs uppercase font-black">
+                  Session Performance
+                </h3>
 
-                <div className="flex justify-between">
-
-                  <div>
-
-                    <h3 className="text-xs uppercase font-black">
-                      Session Performance
-                    </h3>
-
-                    <p className="mt-1 text-[10px] text-slate-500">
-                      Demo session only
-                    </p>
-
-                  </div>
-
-                </div>
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Demo session only
+                </p>
 
                 <div className="grid grid-cols-2 gap-2 mt-4">
-
                   <StatBox
                     label="Trades"
                     value={
@@ -2941,10 +3306,21 @@ export default function BinarySpotPro() {
                     accent="text-amber-400"
                   />
 
+                  <StatBox
+                    label="Current Stake"
+                    value={
+                      currentStake
+                    }
+                    accent="text-amber-400"
+                  />
+
+                  <StatBox
+                    label="Trade Limit"
+                    value={`${tradeCount}/${maxTrades}`}
+                  />
                 </div>
 
                 <div className="mt-4 bg-[#080b11] border border-slate-800 rounded-xl p-3 max-h-[520px] overflow-y-auto space-y-2">
-
                   {botLogs.length ===
                   0 ? (
                     <p className="text-center text-xs text-slate-600 py-10">
@@ -2960,7 +3336,6 @@ export default function BinarySpotPro() {
                           key={`${log.time}-${index}`}
                           className="border border-slate-800 p-2 rounded-lg text-xs font-mono"
                         >
-
                           <span className="text-slate-600">
                             [
                             {
@@ -2987,29 +3362,129 @@ export default function BinarySpotPro() {
                               log.message
                             }
                           </span>
-
                         </div>
                       )
                     )
                   )}
-
                 </div>
-
               </div>
-
             </div>
-
           </div>
         )}
+
+        {/* HISTORY */}
+
+        {activeTab ===
+          'history' && (
+          <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-6">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-black">
+                  Session Trade History
+                </h2>
+
+                <p className="text-xs text-slate-400 mt-1">
+                  Settled demo contracts from this session.
+                </p>
+              </div>
+
+              <span className="text-xs font-mono text-slate-500">
+                {tradeHistory.length}{' '}
+                contracts
+              </span>
+            </div>
+
+            {tradeHistory.length ===
+            0 ? (
+              <div className="py-16 text-center text-sm text-slate-600">
+                No settled contracts yet.
+              </div>
+            ) : (
+              <div className="mt-6 space-y-3">
+                {tradeHistory.map(
+                  (trade) => (
+                    <div
+                      key={
+                        trade.id
+                      }
+                      className="grid grid-cols-2 md:grid-cols-6 gap-3 bg-[#080b11] border border-slate-800 rounded-xl p-4"
+                    >
+                      <HistoryValue
+                        label="Contract"
+                        value={`#${trade.id}`}
+                      />
+
+                      <HistoryValue
+                        label="Result"
+                        value={
+                          trade.result
+                        }
+                        accent={
+                          trade.result ===
+                          'WIN'
+                            ? 'text-emerald-400'
+                            : trade.result ===
+                              'LOSS'
+                            ? 'text-rose-400'
+                            : 'text-slate-300'
+                        }
+                      />
+
+                      <HistoryValue
+                        label="Stake"
+                        value={Number(
+                          trade.stake
+                        ).toFixed(
+                          2
+                        )}
+                      />
+
+                      <HistoryValue
+                        label="P/L"
+                        value={`${
+                          trade.profit >=
+                          0
+                            ? '+'
+                            : ''
+                        }${trade.profit.toFixed(
+                          2
+                        )}`}
+                        accent={
+                          trade.profit >=
+                          0
+                            ? 'text-emerald-400'
+                            : 'text-rose-400'
+                        }
+                      />
+
+                      <HistoryValue
+                        label="Strategy"
+                        value={
+                          trade.strategy
+                        }
+                      />
+
+                      <HistoryValue
+                        label="Time"
+                        value={
+                          trade.time
+                        }
+                      />
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ANALYZER */}
 
         {activeTab ===
           'analyzer' && (
           <div className="bg-[#0f1522] border border-slate-800 p-6 rounded-2xl">
-
             <div className="flex justify-between flex-wrap gap-4">
-
               <div>
-
                 <h2 className="text-xl font-black">
                   Digit Analyzer
                 </h2>
@@ -3017,11 +3492,9 @@ export default function BinarySpotPro() {
                 <p className="text-xs text-slate-400">
                   Last 100 ticks on {symbol}
                 </p>
-
               </div>
 
               <div className="flex gap-2">
-
                 <span className="bg-slate-800 px-3 py-1 rounded text-xs font-black text-cyan-400">
                   Even {
                     evenOddRatio.even
@@ -3033,13 +3506,10 @@ export default function BinarySpotPro() {
                     evenOddRatio.odd
                   }%
                 </span>
-
               </div>
-
             </div>
 
             <div className="grid grid-cols-5 sm:grid-cols-10 gap-2 mt-6">
-
               {digitStats.map(
                 (
                   percentage,
@@ -3051,7 +3521,6 @@ export default function BinarySpotPro() {
                     }
                     className="bg-[#080b11] border border-slate-800 rounded-xl p-3 text-center"
                   >
-
                     <p className="font-black">
                       {digit}
                     </p>
@@ -3061,15 +3530,12 @@ export default function BinarySpotPro() {
                         percentage
                       }%
                     </p>
-
                   </div>
                 )
               )}
-
             </div>
 
             <div className="flex flex-wrap gap-2 mt-6">
-
               {digitHistory
                 .slice(
                   0,
@@ -3099,17 +3565,17 @@ export default function BinarySpotPro() {
                     </span>
                   )
                 )}
-
             </div>
-
           </div>
         )}
-
       </section>
-
     </main>
   );
 }
+
+// ============================================================
+// SMALL UI COMPONENTS
+// ============================================================
 
 function Field({
   label,
@@ -3117,13 +3583,11 @@ function Field({
 }) {
   return (
     <div>
-
       <label className="text-xs text-slate-400 font-bold">
         {label}
       </label>
 
       {children}
-
     </div>
   );
 }
@@ -3135,7 +3599,6 @@ function StatBox({
 }) {
   return (
     <div className="bg-[#080b11] border border-slate-800 rounded-xl p-3">
-
       <p className="text-[10px] uppercase text-slate-500">
         {label}
       </p>
@@ -3145,7 +3608,26 @@ function StatBox({
       >
         {value}
       </p>
+    </div>
+  );
+}
 
+function HistoryValue({
+  label,
+  value,
+  accent = 'text-white',
+}) {
+  return (
+    <div>
+      <p className="text-[9px] uppercase text-slate-600">
+        {label}
+      </p>
+
+      <p
+        className={`mt-1 text-xs font-mono font-black break-all ${accent}`}
+      >
+        {value}
+      </p>
     </div>
   );
 }
@@ -3158,7 +3640,6 @@ function StatusDot({
 }) {
   return (
     <div className="flex items-center gap-2">
-
       <span
         className={`h-2.5 w-2.5 rounded-full ${
           active
@@ -3172,7 +3653,6 @@ function StatusDot({
           ? activeLabel
           : inactiveLabel}
       </span>
-
     </div>
   );
 }
@@ -3195,7 +3675,6 @@ function AccountCard({
           : 'border-rose-700 bg-rose-950/20'
       }`}
     >
-
       <p
         className={`text-[9px] uppercase font-black ${
           demo
@@ -3228,7 +3707,6 @@ function AccountCard({
             )
           : '0.00'}
       </p>
-
     </div>
   );
 }
