@@ -40,6 +40,12 @@ import {
 } from '../lib/tickPrecision';
 
 import {
+  createPipSizeCache,
+  applyCachedPipSize,
+  getPipSizeCacheStatus,
+} from '../lib/pipSizeCache';
+
+import {
   REQUEST_OWNER,
   createRequestGuard,
   beginProposalRequest,
@@ -131,6 +137,8 @@ export default function BinarySpotPro() {
   const [lastDigit, setLastDigit] = useState(null);
 
   const [pipSize, setPipSize] = useState(null);
+
+  const [pipSource, setPipSource] = useState('none');
 
   const [usedPipSize, setUsedPipSize] =
     useState(false);
@@ -272,6 +280,14 @@ export default function BinarySpotPro() {
 
   const publicPingRef = useRef(null);
   const tradingPingRef = useRef(null);
+
+  // ============================================================
+  // PRECISION CACHE
+  // ============================================================
+
+  const pipSizeCacheRef = useRef(
+    createPipSizeCache()
+  );
 
   // ============================================================
   // RECOVERY REFS
@@ -1652,10 +1668,6 @@ export default function BinarySpotPro() {
               event.data
             );
 
-          // ====================================================
-          // ERROR
-          // ====================================================
-
           if (data.error) {
             const message =
               data.error.message ||
@@ -1767,10 +1779,6 @@ export default function BinarySpotPro() {
             return;
           }
 
-          // ====================================================
-          // BALANCE
-          // ====================================================
-
           if (
             data.msg_type ===
               'balance' &&
@@ -1791,10 +1799,6 @@ export default function BinarySpotPro() {
             currencyRef.current =
               nextCurrency;
           }
-
-          // ====================================================
-          // PROPOSAL
-          // ====================================================
 
           if (
             data.msg_type ===
@@ -1968,10 +1972,6 @@ export default function BinarySpotPro() {
             );
           }
 
-          // ====================================================
-          // BUY
-          // ====================================================
-
           if (
             data.msg_type ===
               'buy' &&
@@ -2144,10 +2144,6 @@ export default function BinarySpotPro() {
             );
           }
 
-          // ====================================================
-          // OPEN CONTRACT
-          // ====================================================
-
           if (
             data.msg_type ===
               'proposal_open_contract' &&
@@ -2262,10 +2258,6 @@ export default function BinarySpotPro() {
 
               return;
             }
-
-            // ==================================================
-            // SETTLED
-            // ==================================================
 
             contractOpenRef.current =
               false;
@@ -2961,9 +2953,18 @@ export default function BinarySpotPro() {
                 data.subscription.id;
             }
 
+            const precisionResult =
+              applyCachedPipSize(
+                pipSizeCacheRef.current,
+                data.tick
+              );
+
+            pipSizeCacheRef.current =
+              precisionResult.cache;
+
             const normalizedTick =
               normalizeDerivTick(
-                data.tick
+                precisionResult.tick
               );
 
             if (
@@ -2993,10 +2994,13 @@ export default function BinarySpotPro() {
               normalizedTick.pipSize
             );
 
+            setPipSource(
+              precisionResult.source
+            );
+
             setUsedPipSize(
-              Boolean(
-                normalizedTick.usedPipSize
-              )
+              normalizedTick.pipSize !==
+                null
             );
 
             setLastDigit(
@@ -3381,7 +3385,7 @@ export default function BinarySpotPro() {
     );
 
     addBotLog(
-      `CONTRACT RECOVERY GUARD ACTIVE — ${strategy}`,
+      `PIP PRECISION CACHE ACTIVE — ${strategy}`,
       'system'
     );
 
@@ -3911,14 +3915,27 @@ export default function BinarySpotPro() {
       recoveryRef.current
     );
 
+  const pipCacheStatus =
+    getPipSizeCacheStatus(
+      pipSizeCacheRef.current,
+      symbol
+    );
+
+  const precisionLabel =
+    pipSource === 'live'
+      ? `Live pip ${pipSize}`
+      : pipSource === 'cache'
+      ? `Cached pip ${pipSize}`
+      : pipCacheStatus.hasCachedPrecision
+      ? `Cached pip ${pipCacheStatus.pipSize}`
+      : 'Fallback';
+
   // ============================================================
   // UI
   // ============================================================
 
   return (
     <main className="min-h-screen bg-[#080b11] text-slate-100">
-      {/* STATUS BAR */}
-
       <div className="border-b border-slate-800 bg-[#0e131d] px-4 py-2.5">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
           <div className="flex flex-wrap items-center gap-4">
@@ -3969,8 +3986,6 @@ export default function BinarySpotPro() {
           </div>
         </div>
       </div>
-
-      {/* HEADER */}
 
       <header className="border-b border-slate-800 bg-[#0d121c]">
         <div className="max-w-7xl mx-auto px-4 py-4 flex flex-wrap items-center justify-between gap-4">
@@ -4077,8 +4092,6 @@ export default function BinarySpotPro() {
         </div>
       </header>
 
-      {/* NAV */}
-
       <div className="border-b border-slate-800 bg-[#0b1019]">
         <div className="max-w-7xl mx-auto px-4 py-2 flex gap-2 overflow-x-auto">
           {[
@@ -4122,8 +4135,6 @@ export default function BinarySpotPro() {
         </div>
       </div>
 
-      {/* CONTENT */}
-
       <section className="max-w-7xl mx-auto px-4 py-8">
         {authError && (
           <Alert>
@@ -4131,25 +4142,23 @@ export default function BinarySpotPro() {
           </Alert>
         )}
 
-        {/* OVERVIEW */}
-
         {activeTab ===
           'overview' && (
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Contract Recovery Active
+                Precision Cache Active
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Live Contracts Can Survive a Trading Socket Drop.
+                Stable Last-Digit Precision Across Every Tick.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                BinarySpot Pro now remembers the active contract
-                and its account. If the authenticated socket drops,
-                it requests a fresh Deriv session and restores the
-                contract monitor.
+                BinarySpot Pro now remembers each symbol&apos;s
+                observed pip size. If a later tick omits pip_size,
+                the cached precision is reused before the last digit
+                is extracted.
               </p>
             </div>
 
@@ -4186,9 +4195,7 @@ export default function BinarySpotPro() {
               <StatBox
                 label="Tick Precision"
                 value={
-                  usedPipSize
-                    ? `PIP ${pipSize}`
-                    : 'Fallback'
+                  precisionLabel
                 }
                 accent={
                   usedPipSize
@@ -4200,8 +4207,6 @@ export default function BinarySpotPro() {
           </div>
         )}
 
-        {/* BOT STUDIO */}
-
         {activeTab ===
           'bots' && (
           <div className="space-y-6">
@@ -4212,7 +4217,7 @@ export default function BinarySpotPro() {
                 </h2>
 
                 <p className="mt-1 text-xs text-slate-400">
-                  Demo automation with precision digits,
+                  Demo automation with cached tick precision,
                   request-ID protection, lifecycle ownership and
                   active-contract recovery.
                 </p>
@@ -4237,8 +4242,6 @@ export default function BinarySpotPro() {
                   : sessionStatus.label}
               </span>
             </div>
-
-            {/* SIGNAL */}
 
             <div
               className={`border rounded-2xl p-5 ${
@@ -4315,17 +4318,13 @@ export default function BinarySpotPro() {
                 <MiniInfo
                   label="Precision"
                   value={
-                    usedPipSize
-                      ? `pip ${pipSize}`
-                      : 'fallback'
+                    precisionLabel
                   }
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* SETTINGS */}
-
               <div className="lg:col-span-2 bg-[#0f1522] border border-slate-800 rounded-2xl p-6 space-y-6">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <Field label="Synthetic Asset">
@@ -4365,6 +4364,10 @@ export default function BinarySpotPro() {
 
                         setPipSize(
                           null
+                        );
+
+                        setPipSource(
+                          'none'
                         );
 
                         setUsedPipSize(
@@ -4768,8 +4771,6 @@ export default function BinarySpotPro() {
                   </Alert>
                 )}
 
-                {/* CONTROLS */}
-
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {!isAutoBotRunning ? (
                     <button
@@ -4857,8 +4858,6 @@ export default function BinarySpotPro() {
                   RESET SESSION
                 </button>
 
-                {/* STATUS */}
-
                 <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <StatusCard
                     label="Bot Status"
@@ -4897,8 +4896,6 @@ export default function BinarySpotPro() {
                     }
                   />
                 </div>
-
-                {/* CONTRACT */}
 
                 {activeContract && (
                   <div className="border border-amber-500/30 bg-amber-500/5 rounded-2xl p-5">
@@ -4979,8 +4976,6 @@ export default function BinarySpotPro() {
                   </div>
                 )}
 
-                {/* MANUAL */}
-
                 {!isAutoBotRunning &&
                   !isContractOpen &&
                   !emergencyStopped &&
@@ -5032,8 +5027,6 @@ export default function BinarySpotPro() {
                     </div>
                   )}
               </div>
-
-              {/* PERFORMANCE */}
 
               <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5">
                 <h3 className="text-xs uppercase font-black">
@@ -5165,8 +5158,6 @@ export default function BinarySpotPro() {
           </div>
         )}
 
-        {/* HISTORY */}
-
         {activeTab ===
           'history' && (
           <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-6">
@@ -5263,8 +5254,6 @@ export default function BinarySpotPro() {
           </div>
         )}
 
-        {/* ANALYZER */}
-
         {activeTab ===
           'analyzer' && (
           <div className="space-y-6">
@@ -5294,9 +5283,7 @@ export default function BinarySpotPro() {
                   </span>
 
                   <span className="bg-slate-800 px-3 py-1 rounded text-xs font-black text-emerald-400">
-                    {usedPipSize
-                      ? `Pip ${pipSize}`
-                      : 'Fallback Precision'}
+                    {precisionLabel}
                   </span>
                 </div>
               </div>
