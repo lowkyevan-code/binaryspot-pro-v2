@@ -53,6 +53,22 @@ import {
   isAutoOwner,
 } from '../lib/requestGuard';
 
+import {
+  createContractRecovery,
+  registerLiveContract,
+  attachRecoverySubscription,
+  markContractDisconnected,
+  canRecoverContract,
+  beginContractRecovery,
+  completeContractRecovery,
+  failContractRecovery,
+  markRecoveredContractSettled,
+  clearContractRecovery,
+  getContractRecoveryStatus,
+  buildContractRecoveryRequest,
+  describeContractRecovery,
+} from '../lib/contractRecovery';
+
 const CLIENT_ID = '34hh45FQkPfMgbgj20uoR';
 
 const REDIRECT_URI =
@@ -63,6 +79,8 @@ const PUBLIC_WS_URL =
 
 const INPUT_CLASS =
   'w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm text-slate-100 font-mono disabled:opacity-50';
+
+const RECOVERY_RETRY_MS = 2500;
 
 export default function BinarySpotPro() {
   // ============================================================
@@ -144,6 +162,7 @@ export default function BinarySpotPro() {
   // ============================================================
 
   const [baseStake, setBaseStake] = useState('1.00');
+
   const [currentStake, setCurrentStake] =
     useState('1.00');
 
@@ -236,6 +255,9 @@ export default function BinarySpotPro() {
   const [requestStatusLabel, setRequestStatusLabel] =
     useState('No in-flight request');
 
+  const [recoveryLabel, setRecoveryLabel] =
+    useState('No recovery needed');
+
   // ============================================================
   // SOCKET REFS
   // ============================================================
@@ -243,11 +265,27 @@ export default function BinarySpotPro() {
   const publicWsRef = useRef(null);
   const tradingWsRef = useRef(null);
 
+  const connectTradingSocketRef = useRef(null);
+
   const publicSubscriptionRef = useRef(null);
   const contractSubscriptionRef = useRef(null);
 
   const publicPingRef = useRef(null);
   const tradingPingRef = useRef(null);
+
+  // ============================================================
+  // RECOVERY REFS
+  // ============================================================
+
+  const recoveryRef = useRef(
+    createContractRecovery()
+  );
+
+  const recoveryTimerRef = useRef(null);
+
+  const recoveryRunnerRef = useRef(null);
+
+  const recoveryFetchRunningRef = useRef(false);
 
   // ============================================================
   // BOT REFS
@@ -266,6 +304,7 @@ export default function BinarySpotPro() {
 
   const digitHistoryRef = useRef([]);
 
+  const accountIdRef = useRef('');
   const accountTypeRef = useRef('');
   const currencyRef = useRef('USD');
 
@@ -318,15 +357,23 @@ export default function BinarySpotPro() {
   }, [emergencyStopped]);
 
   useEffect(() => {
-    accountTypeRef.current = accountType;
+    accountIdRef.current =
+      accountId;
+  }, [accountId]);
+
+  useEffect(() => {
+    accountTypeRef.current =
+      accountType;
   }, [accountType]);
 
   useEffect(() => {
-    currencyRef.current = currency;
+    currencyRef.current =
+      currency;
   }, [currency]);
 
   useEffect(() => {
-    strategyRef.current = strategy;
+    strategyRef.current =
+      strategy;
   }, [strategy]);
 
   useEffect(() => {
@@ -407,6 +454,14 @@ export default function BinarySpotPro() {
     );
   }, []);
 
+  const syncRecoveryLabel = useCallback(() => {
+    setRecoveryLabel(
+      describeContractRecovery(
+        recoveryRef.current
+      )
+    );
+  }, []);
+
   const syncRequestStatus = useCallback(() => {
     const status =
       getRequestGuardStatus(
@@ -462,22 +517,63 @@ export default function BinarySpotPro() {
   );
 
   // ============================================================
+  // RECOVERY TIMER
+  // ============================================================
+
+  const clearRecoveryTimer = useCallback(() => {
+    if (recoveryTimerRef.current) {
+      clearTimeout(
+        recoveryTimerRef.current
+      );
+
+      recoveryTimerRef.current = null;
+    }
+  }, []);
+
+  const queueContractRecovery = useCallback(
+    (delay = RECOVERY_RETRY_MS) => {
+      const status =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
+
+      if (
+        !status.hasContract ||
+        status.settled
+      ) {
+        return;
+      }
+
+      if (recoveryTimerRef.current) {
+        return;
+      }
+
+      recoveryTimerRef.current =
+        setTimeout(() => {
+          recoveryTimerRef.current =
+            null;
+
+          if (
+            recoveryRunnerRef.current
+          ) {
+            recoveryRunnerRef.current();
+          }
+        }, delay);
+    },
+    []
+  );
+
+  // ============================================================
   // STOP BOT
   // ============================================================
 
   const stopAutoBot = useCallback(
     (reason = 'Stopped manually') => {
-      autoBotRunningRef.current = false;
+      autoBotRunningRef.current =
+        false;
 
       setIsAutoBotRunning(false);
 
-      /*
-       * Expire any proposal belonging to the old bot run.
-       *
-       * IMPORTANT:
-       * An already-sent BUY is preserved by requestGuard because
-       * Deriv may already have accepted that purchase.
-       */
       requestGuardRef.current =
         invalidateBotGeneration(
           requestGuardRef.current
@@ -524,11 +620,13 @@ export default function BinarySpotPro() {
   // ============================================================
 
   const emergencyStop = useCallback(() => {
-    emergencyStoppedRef.current = true;
+    emergencyStoppedRef.current =
+      true;
 
     setEmergencyStopped(true);
 
-    autoBotRunningRef.current = false;
+    autoBotRunningRef.current =
+      false;
 
     setIsAutoBotRunning(false);
 
@@ -591,7 +689,8 @@ export default function BinarySpotPro() {
       return;
     }
 
-    emergencyStoppedRef.current = false;
+    emergencyStoppedRef.current =
+      false;
 
     setEmergencyStopped(false);
 
@@ -610,6 +709,8 @@ export default function BinarySpotPro() {
   // ============================================================
 
   const closeTradingSocket = useCallback(() => {
+    clearRecoveryTimer();
+
     if (tradingPingRef.current) {
       clearInterval(
         tradingPingRef.current
@@ -620,17 +721,26 @@ export default function BinarySpotPro() {
 
     if (tradingWsRef.current) {
       try {
-        tradingWsRef.current.onclose = null;
+        tradingWsRef.current.onclose =
+          null;
+
+        tradingWsRef.current.onerror =
+          null;
+
         tradingWsRef.current.close();
       } catch {}
 
       tradingWsRef.current = null;
     }
 
-    contractSubscriptionRef.current = null;
+    contractSubscriptionRef.current =
+      null;
 
-    proposalPendingRef.current = false;
-    buyPendingRef.current = false;
+    proposalPendingRef.current =
+      false;
+
+    buyPendingRef.current =
+      false;
 
     requestGuardRef.current =
       resetRequestGuard();
@@ -643,7 +753,7 @@ export default function BinarySpotPro() {
     );
 
     setIsTradingConnected(false);
-  }, []);
+  }, [clearRecoveryTimer]);
 
   // ============================================================
   // BUILD PROPOSAL
@@ -883,7 +993,8 @@ export default function BinarySpotPro() {
 
         syncLifecycleLabel();
 
-        proposalPendingRef.current = true;
+        proposalPendingRef.current =
+          true;
 
         setProposalLoading(true);
 
@@ -915,7 +1026,8 @@ export default function BinarySpotPro() {
 
         syncRequestStatus();
 
-        proposalPendingRef.current = false;
+        proposalPendingRef.current =
+          false;
 
         setProposalLoading(false);
 
@@ -1083,7 +1195,8 @@ export default function BinarySpotPro() {
 
       syncLifecycleLabel();
 
-      contractOpenRef.current = false;
+      contractOpenRef.current =
+        false;
 
       const settlement =
         evaluateSettlementSafety({
@@ -1391,7 +1504,29 @@ export default function BinarySpotPro() {
         return;
       }
 
-      closeTradingSocket();
+      if (tradingPingRef.current) {
+        clearInterval(
+          tradingPingRef.current
+        );
+
+        tradingPingRef.current =
+          null;
+      }
+
+      if (tradingWsRef.current) {
+        try {
+          tradingWsRef.current.onclose =
+            null;
+
+          tradingWsRef.current.onerror =
+            null;
+
+          tradingWsRef.current.close();
+        } catch {}
+      }
+
+      contractSubscriptionRef.current =
+        null;
 
       const ws =
         new WebSocket(wsUrl);
@@ -1399,6 +1534,9 @@ export default function BinarySpotPro() {
       tradingWsRef.current = ws;
 
       ws.onopen = () => {
+        recoveryFetchRunningRef.current =
+          false;
+
         setIsTradingConnected(true);
 
         addBotLog(
@@ -1414,6 +1552,81 @@ export default function BinarySpotPro() {
               nextReqId(),
           })
         );
+
+        const recoveryStatus =
+          getContractRecoveryStatus(
+            recoveryRef.current
+          );
+
+        if (
+          recoveryStatus.hasContract &&
+          recoveryStatus.needsRecovery
+        ) {
+          const permission =
+            canRecoverContract(
+              recoveryRef.current,
+              {
+                accountId:
+                  accountIdRef.current,
+
+                tradingConnected:
+                  true,
+              }
+            );
+
+          if (permission.allowed) {
+            recoveryRef.current =
+              beginContractRecovery(
+                recoveryRef.current
+              );
+
+            syncRecoveryLabel();
+
+            const recoveryRequest =
+              buildContractRecoveryRequest(
+                recoveryRef.current,
+                nextReqId()
+              );
+
+            if (
+              recoveryRequest.valid
+            ) {
+              setContractStatus(
+                'RECOVERING'
+              );
+
+              addBotLog(
+                `Recovering contract #${recoveryStatus.contractId} on fresh authenticated socket.`,
+                'system'
+              );
+
+              ws.send(
+                JSON.stringify(
+                  recoveryRequest.payload
+                )
+              );
+            } else {
+              recoveryRef.current =
+                failContractRecovery(
+                  recoveryRef.current
+                );
+
+              syncRecoveryLabel();
+
+              addBotLog(
+                recoveryRequest.reason,
+                'error'
+              );
+
+              queueContractRecovery();
+            }
+          } else {
+            addBotLog(
+              `Contract recovery blocked: ${permission.reason}`,
+              'error'
+            );
+          }
+        }
 
         tradingPingRef.current =
           setInterval(() => {
@@ -1502,6 +1715,39 @@ export default function BinarySpotPro() {
                 );
 
                 syncRequestStatus();
+              }
+            }
+
+            if (
+              data.echo_req
+                ?.proposal_open_contract ===
+              1
+            ) {
+              const recoveryStatus =
+                getContractRecoveryStatus(
+                  recoveryRef.current
+                );
+
+              if (
+                recoveryStatus.recovering
+              ) {
+                recoveryRef.current =
+                  failContractRecovery(
+                    recoveryRef.current
+                  );
+
+                syncRecoveryLabel();
+
+                setContractStatus(
+                  'RECOVERY REQUIRED'
+                );
+
+                addBotLog(
+                  `Contract recovery request failed: ${message}`,
+                  'error'
+                );
+
+                queueContractRecovery();
               }
             }
 
@@ -1595,10 +1841,6 @@ export default function BinarySpotPro() {
 
             const owner =
               resolved.match.owner;
-
-            // ==================================================
-            // AUTO PROPOSAL
-            // ==================================================
 
             if (
               isAutoOwner(owner)
@@ -1720,10 +1962,6 @@ export default function BinarySpotPro() {
               return;
             }
 
-            // ==================================================
-            // MANUAL PROPOSAL
-            // ==================================================
-
             addBotLog(
               `Manual proposal ready: ${data.proposal.id}`,
               'success'
@@ -1791,12 +2029,6 @@ export default function BinarySpotPro() {
               return;
             }
 
-            /*
-             * The request guard owns the BUY classification.
-             *
-             * This is important if STOP was pressed after ws.send()
-             * but before Deriv returned the BUY response.
-             */
             if (
               isAutoOwner(owner) &&
               lifecycleRef.current?.mode !==
@@ -1826,6 +2058,36 @@ export default function BinarySpotPro() {
               );
 
             syncLifecycleLabel();
+
+            const recoveryRegistration =
+              registerLiveContract(
+                recoveryRef.current,
+                {
+                  contractId,
+
+                  accountId:
+                    accountIdRef.current,
+
+                  owner:
+                    isAutoOwner(owner)
+                      ? 'auto'
+                      : 'manual',
+                }
+              );
+
+            if (
+              recoveryRegistration.valid
+            ) {
+              recoveryRef.current =
+                recoveryRegistration.recovery;
+
+              syncRecoveryLabel();
+            } else {
+              addBotLog(
+                `Recovery registration warning: ${recoveryRegistration.reason}`,
+                'error'
+              );
+            }
 
             contractOpenRef.current =
               true;
@@ -1899,6 +2161,37 @@ export default function BinarySpotPro() {
             ) {
               contractSubscriptionRef.current =
                 data.subscription.id;
+
+              recoveryRef.current =
+                attachRecoverySubscription(
+                  recoveryRef.current,
+                  data.subscription.id
+                );
+            }
+
+            const recoveryStatusBefore =
+              getContractRecoveryStatus(
+                recoveryRef.current
+              );
+
+            if (
+              recoveryStatusBefore.recovering
+            ) {
+              recoveryRef.current =
+                completeContractRecovery(
+                  recoveryRef.current,
+                  data.subscription?.id ||
+                    null
+                );
+
+              syncRecoveryLabel();
+
+              addBotLog(
+                `Contract #${contract.contract_id} monitor recovered successfully.`,
+                'success'
+              );
+            } else {
+              syncRecoveryLabel();
             }
 
             const profit =
@@ -1957,7 +2250,9 @@ export default function BinarySpotPro() {
               })
             );
 
-            if (!contract.is_sold) {
+            if (
+              !contract.is_sold
+            ) {
               contractOpenRef.current =
                 true;
 
@@ -1974,6 +2269,16 @@ export default function BinarySpotPro() {
 
             contractOpenRef.current =
               false;
+
+            clearRecoveryTimer();
+
+            recoveryRef.current =
+              markRecoveredContractSettled(
+                recoveryRef.current,
+                contract.contract_id
+              );
+
+            syncRecoveryLabel();
 
             const finalStatus =
               contract.status ||
@@ -2079,20 +2384,62 @@ export default function BinarySpotPro() {
         setIsTradingConnected(
           false
         );
-
-        if (
-          autoBotRunningRef.current
-        ) {
-          stopAutoBot(
-            'Trading socket error.'
-          );
-        }
       };
 
       ws.onclose = () => {
+        if (
+          tradingPingRef.current
+        ) {
+          clearInterval(
+            tradingPingRef.current
+          );
+
+          tradingPingRef.current =
+            null;
+        }
+
         setIsTradingConnected(
           false
         );
+
+        const recoveryStatus =
+          getContractRecoveryStatus(
+            recoveryRef.current
+          );
+
+        if (
+          contractOpenRef.current &&
+          recoveryStatus.hasContract &&
+          !recoveryStatus.settled
+        ) {
+          recoveryRef.current =
+            markContractDisconnected(
+              recoveryRef.current
+            );
+
+          syncRecoveryLabel();
+
+          setContractStatus(
+            'RECOVERY REQUIRED'
+          );
+
+          addBotLog(
+            `Trading socket disconnected while contract #${recoveryStatus.contractId} is active. Recovery queued.`,
+            'error'
+          );
+
+          if (
+            autoBotRunningRef.current
+          ) {
+            stopAutoBot(
+              'Trading socket disconnected. Recovering active contract.'
+            );
+          }
+
+          queueContractRecovery();
+
+          return;
+        }
 
         if (
           autoBotRunningRef.current
@@ -2105,13 +2452,144 @@ export default function BinarySpotPro() {
     },
     [
       addBotLog,
-      closeTradingSocket,
+      clearRecoveryTimer,
       handleAutoSettlement,
+      queueContractRecovery,
       stopAutoBot,
       syncLifecycleLabel,
+      syncRecoveryLabel,
       syncRequestStatus,
     ]
   );
+
+  connectTradingSocketRef.current =
+    connectTradingSocket;
+
+  // ============================================================
+  // ACTIVE CONTRACT RECOVERY RUNNER
+  // ============================================================
+
+  recoveryRunnerRef.current =
+    async () => {
+      const status =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
+
+      if (
+        !status.hasContract ||
+        status.settled ||
+        !status.needsRecovery
+      ) {
+        return;
+      }
+
+      if (
+        recoveryFetchRunningRef.current
+      ) {
+        return;
+      }
+
+      recoveryFetchRunningRef.current =
+        true;
+
+      try {
+        setContractStatus(
+          'RECONNECTING'
+        );
+
+        addBotLog(
+          `Requesting fresh authenticated session for contract #${status.contractId}.`,
+          'system'
+        );
+
+        const response =
+          await fetch(
+            `/api/auth/deriv/session?account_id=${encodeURIComponent(
+              status.accountId
+            )}`,
+            {
+              method: 'GET',
+
+              credentials:
+                'include',
+
+              cache:
+                'no-store',
+            }
+          );
+
+        const data =
+          await response.json();
+
+        if (
+          !response.ok ||
+          !data.authenticated
+        ) {
+          throw new Error(
+            data.error ||
+              'Unable to refresh authenticated Deriv session.'
+          );
+        }
+
+        if (
+          !data.account ||
+          data.account.id !==
+            status.accountId
+        ) {
+          throw new Error(
+            'Recovery session returned the wrong Deriv account.'
+          );
+        }
+
+        if (!data.wsUrl) {
+          throw new Error(
+            'Recovery session did not return a fresh WebSocket URL.'
+          );
+        }
+
+        if (
+          !connectTradingSocketRef.current
+        ) {
+          throw new Error(
+            'Trading socket recovery handler is unavailable.'
+          );
+        }
+
+        addBotLog(
+          `Fresh recovery session received for ${status.accountId}.`,
+          'system'
+        );
+
+        connectTradingSocketRef.current(
+          data.wsUrl
+        );
+      } catch (error) {
+        recoveryFetchRunningRef.current =
+          false;
+
+        recoveryRef.current =
+          failContractRecovery(
+            recoveryRef.current
+          );
+
+        syncRecoveryLabel();
+
+        setContractStatus(
+          'RECOVERY REQUIRED'
+        );
+
+        addBotLog(
+          `Recovery retry needed: ${
+            error.message ||
+            'Unknown recovery error'
+          }`,
+          'error'
+        );
+
+        queueContractRecovery();
+      }
+    };
 
   // ============================================================
   // SESSION
@@ -2201,6 +2679,10 @@ export default function BinarySpotPro() {
             ''
         );
 
+        accountIdRef.current =
+          data.account.id ||
+          '';
+
         setSelectedAccountId(
           data.account.id ||
             ''
@@ -2254,8 +2736,17 @@ export default function BinarySpotPro() {
         requestGuardRef.current =
           resetRequestGuard();
 
+        recoveryRef.current =
+          clearContractRecovery();
+
+        recoveryFetchRunningRef.current =
+          false;
+
+        clearRecoveryTimer();
+
         syncLifecycleLabel();
         syncRequestStatus();
+        syncRecoveryLabel();
 
         setProposalData(null);
         setProposalError('');
@@ -2296,10 +2787,12 @@ export default function BinarySpotPro() {
       }
     },
     [
+      clearRecoveryTimer,
       closeTradingSocket,
       connectTradingSocket,
       syncLifecycleLabel,
       syncRequestStatus,
+      syncRecoveryLabel,
     ]
   );
 
@@ -2343,9 +2836,11 @@ export default function BinarySpotPro() {
     loadDerivSession();
 
     return () => {
+      clearRecoveryTimer();
       closeTradingSocket();
     };
   }, [
+    clearRecoveryTimer,
     loadDerivSession,
     closeTradingSocket,
   ]);
@@ -2369,12 +2864,21 @@ export default function BinarySpotPro() {
           requestGuardRef.current
         );
 
+      const recoveryStatus =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
+
       if (
         contractOpenRef.current ||
-        requestStatus.buyPending
+        requestStatus.buyPending ||
+        (
+          recoveryStatus.hasContract &&
+          !recoveryStatus.settled
+        )
       ) {
         setAuthError(
-          'Wait for the active or in-flight contract purchase to finish before switching accounts.'
+          'Wait for the active or recovering contract to settle before switching accounts.'
         );
 
         return;
@@ -2730,6 +3234,22 @@ export default function BinarySpotPro() {
   // ============================================================
 
   const startAutoBot = () => {
+    const recoveryStatus =
+      getContractRecoveryStatus(
+        recoveryRef.current
+      );
+
+    if (
+      recoveryStatus.hasContract &&
+      !recoveryStatus.settled
+    ) {
+      setBuyError(
+        'Wait for the active or recovering contract to settle before starting another bot session.'
+      );
+
+      return;
+    }
+
     const requestPermission =
       canStartNewBotSession(
         requestGuardRef.current
@@ -2844,8 +3364,11 @@ export default function BinarySpotPro() {
     lifecycleRef.current =
       createTradeLifecycle();
 
-    syncLifecycleLabel();
+    recoveryRef.current =
+      clearContractRecovery();
 
+    syncLifecycleLabel();
+    syncRecoveryLabel();
     syncRequestStatus();
 
     autoBotRunningRef.current =
@@ -2858,7 +3381,7 @@ export default function BinarySpotPro() {
     );
 
     addBotLog(
-      `REQUEST GUARD ACTIVE — ${strategy}`,
+      `CONTRACT RECOVERY GUARD ACTIVE — ${strategy}`,
       'system'
     );
 
@@ -2897,6 +3420,22 @@ export default function BinarySpotPro() {
 
   const requestManualProposal =
     () => {
+      const recoveryStatus =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
+
+      if (
+        recoveryStatus.hasContract &&
+        !recoveryStatus.settled
+      ) {
+        setProposalError(
+          'Wait for the active or recovering contract to settle.'
+        );
+
+        return;
+      }
+
       const requestPermission =
         canStartNewBotSession(
           requestGuardRef.current
@@ -3056,6 +3595,22 @@ export default function BinarySpotPro() {
         return;
       }
 
+      const recoveryStatus =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
+
+      if (
+        recoveryStatus.hasContract &&
+        !recoveryStatus.settled
+      ) {
+        setBuyError(
+          'A contract is still active or recovering.'
+        );
+
+        return;
+      }
+
       const guardStatus =
         getRequestGuardStatus(
           requestGuardRef.current
@@ -3197,11 +3752,20 @@ export default function BinarySpotPro() {
           requestGuardRef.current
         );
 
+      const recoveryStatus =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
+
       if (
         isAutoBotRunning ||
         contractOpenRef.current ||
         requestStatus.proposalPending ||
-        requestStatus.buyPending
+        requestStatus.buyPending ||
+        (
+          recoveryStatus.hasContract &&
+          !recoveryStatus.settled
+        )
       ) {
         return;
       }
@@ -3244,8 +3808,14 @@ export default function BinarySpotPro() {
       requestGuardRef.current =
         resetRequestGuard();
 
+      recoveryRef.current =
+        clearContractRecovery();
+
+      clearRecoveryTimer();
+
       syncLifecycleLabel();
       syncRequestStatus();
+      syncRecoveryLabel();
 
       setBotLogs([]);
 
@@ -3254,6 +3824,14 @@ export default function BinarySpotPro() {
       setProposalError('');
 
       setBuyError('');
+
+      setActiveContract(null);
+
+      setContractProfit(null);
+
+      setContractStatus(
+        'No active contract'
+      );
 
       setAutoBotStatus(
         'Standby'
@@ -3328,6 +3906,11 @@ export default function BinarySpotPro() {
         cooldownUntilRef.current,
     });
 
+  const recoveryStatus =
+    getContractRecoveryStatus(
+      recoveryRef.current
+    );
+
   // ============================================================
   // UI
   // ============================================================
@@ -3353,7 +3936,11 @@ export default function BinarySpotPro() {
                   isTradingConnected
                 }
                 activeLabel="Trading Socket Active"
-                inactiveLabel="Trading Socket Offline"
+                inactiveLabel={
+                  recoveryStatus.needsRecovery
+                    ? 'Trading Socket Recovering'
+                    : 'Trading Socket Offline'
+                }
                 activeClass="bg-cyan-400"
               />
             )}
@@ -3433,14 +4020,17 @@ export default function BinarySpotPro() {
                     event
                   ) =>
                     switchAccount(
-                      event.target
-                        .value
+                      event.target.value
                     )
                   }
                   disabled={
                     isAutoBotRunning ||
                     isContractOpen ||
-                    buyLoading
+                    buyLoading ||
+                    (
+                      recoveryStatus.hasContract &&
+                      !recoveryStatus.settled
+                    )
                   }
                   className="bg-[#151d2d] border border-slate-700 rounded-xl px-3 py-2 text-xs"
                 >
@@ -3548,17 +4138,18 @@ export default function BinarySpotPro() {
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Request Guard Active
+                Contract Recovery Active
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Every Proposal and Purchase Has an Owner.
+                Live Contracts Can Survive a Trading Socket Drop.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                WebSocket request IDs now separate current requests
-                from stale responses while preserving already-sent
-                purchase requests until Deriv confirms their result.
+                BinarySpot Pro now remembers the active contract
+                and its account. If the authenticated socket drops,
+                it requests a fresh Deriv session and restores the
+                contract monitor.
               </p>
             </div>
 
@@ -3572,25 +4163,24 @@ export default function BinarySpotPro() {
               />
 
               <StatBox
-                label="Signal"
-                value={
-                  signal.shouldTrade
-                    ? 'ENTER'
-                    : 'WAIT'
-                }
-                accent={
-                  signal.shouldTrade
-                    ? 'text-emerald-400'
-                    : 'text-amber-400'
-                }
-              />
-
-              <StatBox
                 label="Request Guard"
                 value={
                   requestStatusLabel
                 }
                 accent="text-amber-400"
+              />
+
+              <StatBox
+                label="Contract Recovery"
+                value={
+                  recoveryLabel
+                }
+                accent={
+                  recoveryStatus.needsRecovery ||
+                  recoveryStatus.recovering
+                    ? 'text-amber-400'
+                    : 'text-emerald-400'
+                }
               />
 
               <StatBox
@@ -3622,8 +4212,9 @@ export default function BinarySpotPro() {
                 </h2>
 
                 <p className="mt-1 text-xs text-slate-400">
-                  Demo automation with precision digits, lifecycle
-                  ownership and request-ID protection.
+                  Demo automation with precision digits,
+                  request-ID protection, lifecycle ownership and
+                  active-contract recovery.
                 </p>
               </div>
 
@@ -3631,14 +4222,19 @@ export default function BinarySpotPro() {
                 className={`px-3 py-1.5 rounded-full text-xs font-black ${
                   emergencyStopped
                     ? 'bg-rose-500/20 text-rose-400'
+                    : recoveryStatus.needsRecovery ||
+                      recoveryStatus.recovering
+                    ? 'bg-amber-500/15 text-amber-400'
                     : isAutoBotRunning
                     ? 'bg-emerald-500/15 text-emerald-400'
                     : 'bg-slate-800 text-slate-400'
                 }`}
               >
-                {
-                  sessionStatus.label
-                }
+                {recoveryStatus.needsRecovery
+                  ? 'RECOVERY REQUIRED'
+                  : recoveryStatus.recovering
+                  ? 'RECOVERING CONTRACT'
+                  : sessionStatus.label}
               </span>
             </div>
 
@@ -3741,8 +4337,7 @@ export default function BinarySpotPro() {
                         event
                       ) => {
                         setSymbol(
-                          event.target
-                            .value
+                          event.target.value
                         );
 
                         digitHistoryRef.current =
@@ -3780,7 +4375,11 @@ export default function BinarySpotPro() {
                         isAutoBotRunning ||
                         isContractOpen ||
                         proposalLoading ||
-                        buyLoading
+                        buyLoading ||
+                        (
+                          recoveryStatus.hasContract &&
+                          !recoveryStatus.settled
+                        )
                       }
                       className={
                         INPUT_CLASS
@@ -3813,15 +4412,18 @@ export default function BinarySpotPro() {
                         event
                       ) =>
                         setStrategy(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       disabled={
                         isAutoBotRunning ||
                         isContractOpen ||
                         proposalLoading ||
-                        buyLoading
+                        buyLoading ||
+                        (
+                          recoveryStatus.hasContract &&
+                          !recoveryStatus.settled
+                        )
                       }
                       className={
                         INPUT_CLASS
@@ -3867,8 +4469,7 @@ export default function BinarySpotPro() {
                             event
                           ) =>
                             setPredictionDigit(
-                              event.target
-                                .value
+                              event.target.value
                             )
                           }
                           disabled={
@@ -3915,8 +4516,7 @@ export default function BinarySpotPro() {
                         event
                       ) =>
                         setMinimumConfidence(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       disabled={
@@ -3940,16 +4540,14 @@ export default function BinarySpotPro() {
                         event
                       ) => {
                         setBaseStake(
-                          event.target
-                            .value
+                          event.target.value
                         );
 
                         if (
                           !isAutoBotRunning
                         ) {
                           setCurrentStake(
-                            event.target
-                              .value
+                            event.target.value
                           );
                         }
                       }}
@@ -3984,8 +4582,7 @@ export default function BinarySpotPro() {
                         event
                       ) =>
                         setMaxStake(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       disabled={
@@ -4009,8 +4606,7 @@ export default function BinarySpotPro() {
                         event
                       ) =>
                         setDuration(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       disabled={
@@ -4034,8 +4630,7 @@ export default function BinarySpotPro() {
                         event
                       ) =>
                         setMartingale(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       disabled={
@@ -4058,8 +4653,7 @@ export default function BinarySpotPro() {
                         event
                       ) =>
                         setMaxTrades(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       disabled={
@@ -4082,8 +4676,7 @@ export default function BinarySpotPro() {
                         event
                       ) =>
                         setCooldownSeconds(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       disabled={
@@ -4105,8 +4698,7 @@ export default function BinarySpotPro() {
                         event
                       ) =>
                         setTakeProfit(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       disabled={
@@ -4128,8 +4720,7 @@ export default function BinarySpotPro() {
                         event
                       ) =>
                         setStopLoss(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       disabled={
@@ -4152,8 +4743,7 @@ export default function BinarySpotPro() {
                         event
                       ) =>
                         setMaxConsecutiveLosses(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
                       disabled={
@@ -4193,7 +4783,11 @@ export default function BinarySpotPro() {
                         isContractOpen ||
                         emergencyStopped ||
                         proposalLoading ||
-                        buyLoading
+                        buyLoading ||
+                        (
+                          recoveryStatus.hasContract &&
+                          !recoveryStatus.settled
+                        )
                       }
                       className="py-4 bg-emerald-500 disabled:opacity-40 text-black font-black rounded-xl"
                     >
@@ -4252,7 +4846,11 @@ export default function BinarySpotPro() {
                     isAutoBotRunning ||
                     isContractOpen ||
                     proposalLoading ||
-                    buyLoading
+                    buyLoading ||
+                    (
+                      recoveryStatus.hasContract &&
+                      !recoveryStatus.settled
+                    )
                   }
                   className="w-full py-3 bg-slate-800 disabled:opacity-40 font-black rounded-xl"
                 >
@@ -4261,42 +4859,43 @@ export default function BinarySpotPro() {
 
                 {/* STATUS */}
 
-                <div className="grid sm:grid-cols-3 gap-3">
-                  <div className="border border-slate-800 rounded-2xl p-5">
-                    <p className="text-[10px] uppercase text-slate-500 font-black">
-                      Bot Status
-                    </p>
+                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <StatusCard
+                    label="Bot Status"
+                    value={
+                      autoBotStatus
+                    }
+                    accent="text-cyan-400"
+                  />
 
-                    <p className="mt-2 font-mono text-cyan-400 font-black text-xs">
-                      {
-                        autoBotStatus
-                      }
-                    </p>
-                  </div>
+                  <StatusCard
+                    label="Trade Lifecycle"
+                    value={
+                      lifecycleLabel
+                    }
+                    accent="text-amber-400"
+                  />
 
-                  <div className="border border-slate-800 rounded-2xl p-5">
-                    <p className="text-[10px] uppercase text-slate-500 font-black">
-                      Trade Lifecycle
-                    </p>
+                  <StatusCard
+                    label="Request Guard"
+                    value={
+                      requestStatusLabel
+                    }
+                    accent="text-emerald-400"
+                  />
 
-                    <p className="mt-2 font-mono text-amber-400 font-black text-xs">
-                      {
-                        lifecycleLabel
-                      }
-                    </p>
-                  </div>
-
-                  <div className="border border-slate-800 rounded-2xl p-5">
-                    <p className="text-[10px] uppercase text-slate-500 font-black">
-                      Request Guard
-                    </p>
-
-                    <p className="mt-2 font-mono text-emerald-400 font-black text-xs">
-                      {
-                        requestStatusLabel
-                      }
-                    </p>
-                  </div>
+                  <StatusCard
+                    label="Contract Recovery"
+                    value={
+                      recoveryLabel
+                    }
+                    accent={
+                      recoveryStatus.needsRecovery ||
+                      recoveryStatus.recovering
+                        ? 'text-amber-400'
+                        : 'text-emerald-400'
+                    }
+                  />
                 </div>
 
                 {/* CONTRACT */}
@@ -4384,7 +4983,11 @@ export default function BinarySpotPro() {
 
                 {!isAutoBotRunning &&
                   !isContractOpen &&
-                  !emergencyStopped && (
+                  !emergencyStopped &&
+                  !(
+                    recoveryStatus.hasContract &&
+                    !recoveryStatus.settled
+                  ) && (
                     <div className="border-t border-slate-800 pt-6">
                       <p className="text-xs uppercase font-black text-slate-500 mb-3">
                         Manual Demo Test
@@ -4502,9 +5105,9 @@ export default function BinarySpotPro() {
                   />
 
                   <StatBox
-                    label="Current Stake"
+                    label="Recovery Tries"
                     value={
-                      currentStake
+                      recoveryStatus.recoveryAttempts
                     }
                     accent="text-amber-400"
                   />
@@ -4850,6 +5453,26 @@ function StatBox({
 
       <p
         className={`mt-1 text-lg font-black font-mono ${accent}`}
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function StatusCard({
+  label,
+  value,
+  accent = 'text-white',
+}) {
+  return (
+    <div className="border border-slate-800 rounded-2xl p-5">
+      <p className="text-[10px] uppercase text-slate-500 font-black">
+        {label}
+      </p>
+
+      <p
+        className={`mt-2 font-mono font-black text-xs ${accent}`}
       >
         {value}
       </p>
