@@ -39,6 +39,20 @@ import {
   prependDigitToHistory,
 } from '../lib/tickPrecision';
 
+import {
+  REQUEST_OWNER,
+  createRequestGuard,
+  beginProposalRequest,
+  beginBuyRequest,
+  resolveProposalRequest,
+  resolveBuyRequest,
+  invalidateBotGeneration,
+  resetRequestGuard,
+  canStartNewBotSession,
+  getRequestGuardStatus,
+  isAutoOwner,
+} from '../lib/requestGuard';
+
 const CLIENT_ID = '34hh45FQkPfMgbgj20uoR';
 
 const REDIRECT_URI =
@@ -130,7 +144,6 @@ export default function BinarySpotPro() {
   // ============================================================
 
   const [baseStake, setBaseStake] = useState('1.00');
-
   const [currentStake, setCurrentStake] =
     useState('1.00');
 
@@ -173,7 +186,6 @@ export default function BinarySpotPro() {
     useState(false);
 
   const [totalProfit, setTotalProfit] = useState(0);
-
   const [tradeCount, setTradeCount] = useState(0);
 
   const [winCount, setWinCount] = useState(0);
@@ -221,6 +233,9 @@ export default function BinarySpotPro() {
   const [lifecycleLabel, setLifecycleLabel] =
     useState('No active lifecycle');
 
+  const [requestStatusLabel, setRequestStatusLabel] =
+    useState('No in-flight request');
+
   // ============================================================
   // SOCKET REFS
   // ============================================================
@@ -241,7 +256,6 @@ export default function BinarySpotPro() {
   const requestIdRef = useRef(1000);
 
   const autoBotRunningRef = useRef(false);
-
   const emergencyStoppedRef = useRef(false);
 
   const proposalPendingRef = useRef(false);
@@ -283,6 +297,10 @@ export default function BinarySpotPro() {
 
   const lifecycleRef = useRef(
     createTradeLifecycle()
+  );
+
+  const requestGuardRef = useRef(
+    createRequestGuard()
   );
 
   // ============================================================
@@ -389,6 +407,43 @@ export default function BinarySpotPro() {
     );
   }, []);
 
+  const syncRequestStatus = useCallback(() => {
+    const status =
+      getRequestGuardStatus(
+        requestGuardRef.current
+      );
+
+    proposalPendingRef.current =
+      status.proposalPending;
+
+    buyPendingRef.current =
+      status.buyPending;
+
+    if (status.buyPending) {
+      setRequestStatusLabel(
+        `BUY #${status.buyReqId} — ${String(
+          status.buyOwner || ''
+        ).toUpperCase()}`
+      );
+
+      return;
+    }
+
+    if (status.proposalPending) {
+      setRequestStatusLabel(
+        `PROPOSAL #${status.proposalReqId} — ${String(
+          status.proposalOwner || ''
+        ).toUpperCase()}`
+      );
+
+      return;
+    }
+
+    setRequestStatusLabel(
+      `Generation ${status.generation} — Clear`
+    );
+  }, []);
+
   const addBotLog = useCallback(
     (message, type = 'info') => {
       const time =
@@ -406,24 +461,62 @@ export default function BinarySpotPro() {
     []
   );
 
+  // ============================================================
+  // STOP BOT
+  // ============================================================
+
   const stopAutoBot = useCallback(
     (reason = 'Stopped manually') => {
       autoBotRunningRef.current = false;
 
       setIsAutoBotRunning(false);
 
-      proposalPendingRef.current = false;
+      /*
+       * Expire any proposal belonging to the old bot run.
+       *
+       * IMPORTANT:
+       * An already-sent BUY is preserved by requestGuard because
+       * Deriv may already have accepted that purchase.
+       */
+      requestGuardRef.current =
+        invalidateBotGeneration(
+          requestGuardRef.current
+        );
 
-      setProposalLoading(false);
+      const status =
+        getRequestGuardStatus(
+          requestGuardRef.current
+        );
+
+      proposalPendingRef.current =
+        status.proposalPending;
+
+      buyPendingRef.current =
+        status.buyPending;
+
+      setProposalLoading(
+        status.proposalPending
+      );
+
+      setBuyLoading(
+        status.buyPending
+      );
+
+      syncRequestStatus();
 
       setAutoBotStatus(reason);
 
       addBotLog(
-        `Auto bot stopped: ${reason}`,
+        status.buyPending
+          ? `Auto bot stopped: ${reason}. In-flight BUY will still be accounted for.`
+          : `Auto bot stopped: ${reason}`,
         'system'
       );
     },
-    [addBotLog]
+    [
+      addBotLog,
+      syncRequestStatus,
+    ]
   );
 
   // ============================================================
@@ -439,26 +532,60 @@ export default function BinarySpotPro() {
 
     setIsAutoBotRunning(false);
 
-    proposalPendingRef.current = false;
+    requestGuardRef.current =
+      invalidateBotGeneration(
+        requestGuardRef.current
+      );
 
-    setProposalLoading(false);
+    const status =
+      getRequestGuardStatus(
+        requestGuardRef.current
+      );
+
+    proposalPendingRef.current =
+      status.proposalPending;
+
+    buyPendingRef.current =
+      status.buyPending;
+
+    setProposalLoading(
+      status.proposalPending
+    );
+
+    setBuyLoading(
+      status.buyPending
+    );
+
+    syncRequestStatus();
 
     setAutoBotStatus(
       'EMERGENCY STOP ACTIVATED'
     );
 
     addBotLog(
-      contractOpenRef.current
-        ? 'EMERGENCY STOP: New entries blocked. The active automated contract will still be recorded when it settles.'
+      contractOpenRef.current ||
+        status.buyPending
+        ? 'EMERGENCY STOP: New entries blocked. Any already-purchased or in-flight automated contract will still be accounted for.'
         : 'EMERGENCY STOP: New entries blocked.',
       'error'
     );
-  }, [addBotLog]);
+  }, [
+    addBotLog,
+    syncRequestStatus,
+  ]);
 
   const clearEmergencyStop = () => {
-    if (contractOpenRef.current) {
+    const requestStatus =
+      getRequestGuardStatus(
+        requestGuardRef.current
+      );
+
+    if (
+      contractOpenRef.current ||
+      requestStatus.buyPending
+    ) {
       setBuyError(
-        'Wait for the active contract to settle first.'
+        'Wait for the active or in-flight contract purchase to finish first.'
       );
 
       return;
@@ -504,6 +631,16 @@ export default function BinarySpotPro() {
 
     proposalPendingRef.current = false;
     buyPendingRef.current = false;
+
+    requestGuardRef.current =
+      resetRequestGuard();
+
+    setProposalLoading(false);
+    setBuyLoading(false);
+
+    setRequestStatusLabel(
+      'Socket closed — requests reset'
+    );
 
     setIsTradingConnected(false);
   }, []);
@@ -716,6 +853,29 @@ export default function BinarySpotPro() {
             entrySignal?.predictionDigit
           );
 
+        const registration =
+          beginProposalRequest(
+            requestGuardRef.current,
+            {
+              reqId:
+                payload.req_id,
+
+              owner:
+                REQUEST_OWNER.AUTO,
+            }
+          );
+
+        if (!registration.valid) {
+          throw new Error(
+            registration.reason
+          );
+        }
+
+        requestGuardRef.current =
+          registration.guard;
+
+        syncRequestStatus();
+
         lifecycleRef.current =
           beginTradeLifecycle({
             mode: 'auto',
@@ -740,7 +900,7 @@ export default function BinarySpotPro() {
             1
           )}% | Stake ${currencyRef.current} ${stake.toFixed(
             2
-          )}`,
+          )} | Req #${payload.req_id}`,
           'trade'
         );
 
@@ -748,6 +908,13 @@ export default function BinarySpotPro() {
           JSON.stringify(payload)
         );
       } catch (error) {
+        requestGuardRef.current =
+          invalidateBotGeneration(
+            requestGuardRef.current
+          );
+
+        syncRequestStatus();
+
         proposalPendingRef.current = false;
 
         setProposalLoading(false);
@@ -768,6 +935,7 @@ export default function BinarySpotPro() {
       addBotLog,
       stopAutoBot,
       syncLifecycleLabel,
+      syncRequestStatus,
     ]
   );
 
@@ -1271,6 +1439,10 @@ export default function BinarySpotPro() {
               event.data
             );
 
+          // ====================================================
+          // ERROR
+          // ====================================================
+
           if (data.error) {
             const message =
               data.error.message ||
@@ -1280,27 +1452,57 @@ export default function BinarySpotPro() {
               data.echo_req?.proposal ===
               1
             ) {
-              proposalPendingRef.current =
-                false;
+              const resolved =
+                resolveProposalRequest(
+                  requestGuardRef.current,
+                  data
+                );
 
-              setProposalLoading(false);
+              if (
+                resolved.match.matched
+              ) {
+                requestGuardRef.current =
+                  resolved.guard;
 
-              setProposalError(
-                message
-              );
+                proposalPendingRef.current =
+                  false;
+
+                setProposalLoading(false);
+
+                setProposalError(
+                  message
+                );
+
+                syncRequestStatus();
+              }
             }
 
             if (
               data.echo_req?.buy
             ) {
-              buyPendingRef.current =
-                false;
+              const resolved =
+                resolveBuyRequest(
+                  requestGuardRef.current,
+                  data
+                );
 
-              setBuyLoading(false);
+              if (
+                resolved.match.matched
+              ) {
+                requestGuardRef.current =
+                  resolved.guard;
 
-              setBuyError(
-                message
-              );
+                buyPendingRef.current =
+                  false;
+
+                setBuyLoading(false);
+
+                setBuyError(
+                  message
+                );
+
+                syncRequestStatus();
+              }
             }
 
             addBotLog(
@@ -1318,6 +1520,10 @@ export default function BinarySpotPro() {
 
             return;
           }
+
+          // ====================================================
+          // BALANCE
+          // ====================================================
 
           if (
             data.msg_type ===
@@ -1340,11 +1546,42 @@ export default function BinarySpotPro() {
               nextCurrency;
           }
 
+          // ====================================================
+          // PROPOSAL
+          // ====================================================
+
           if (
             data.msg_type ===
               'proposal' &&
             data.proposal
           ) {
+            const resolved =
+              resolveProposalRequest(
+                requestGuardRef.current,
+                data
+              );
+
+            if (
+              !resolved.match.matched
+            ) {
+              addBotLog(
+                `Ignored stale proposal response${
+                  resolved.match.reqId !==
+                  null
+                    ? ` #${resolved.match.reqId}`
+                    : ''
+                }.`,
+                'system'
+              );
+
+              return;
+            }
+
+            requestGuardRef.current =
+              resolved.guard;
+
+            syncRequestStatus();
+
             proposalPendingRef.current =
               false;
 
@@ -1356,16 +1593,22 @@ export default function BinarySpotPro() {
               data.proposal
             );
 
+            const owner =
+              resolved.match.owner;
+
+            // ==================================================
+            // AUTO PROPOSAL
+            // ==================================================
+
             if (
-              lifecycleRef.current?.mode ===
-              'auto'
+              isAutoOwner(owner)
             ) {
               if (
                 emergencyStoppedRef.current ||
                 !autoBotRunningRef.current
               ) {
                 addBotLog(
-                  'Proposal returned after bot stop. Purchase cancelled.',
+                  'Auto proposal returned after bot stop. Purchase cancelled.',
                   'system'
                 );
 
@@ -1414,6 +1657,39 @@ export default function BinarySpotPro() {
                 return;
               }
 
+              const buyReqId =
+                nextReqId();
+
+              const registration =
+                beginBuyRequest(
+                  requestGuardRef.current,
+                  {
+                    reqId:
+                      buyReqId,
+
+                    owner:
+                      REQUEST_OWNER.AUTO,
+
+                    proposalId:
+                      data.proposal.id,
+                  }
+                );
+
+              if (
+                !registration.valid
+              ) {
+                stopAutoBot(
+                  registration.reason
+                );
+
+                return;
+              }
+
+              requestGuardRef.current =
+                registration.guard;
+
+              syncRequestStatus();
+
               buyPendingRef.current =
                 true;
 
@@ -1421,6 +1697,11 @@ export default function BinarySpotPro() {
 
               setAutoBotStatus(
                 'Signal confirmed — buying demo contract...'
+              );
+
+              addBotLog(
+                `AUTO BUY sent | Req #${buyReqId}`,
+                'trade'
               );
 
               ws.send(
@@ -1432,12 +1713,16 @@ export default function BinarySpotPro() {
                     askPrice,
 
                   req_id:
-                    nextReqId(),
+                    buyReqId,
                 })
               );
 
               return;
             }
+
+            // ==================================================
+            // MANUAL PROPOSAL
+            // ==================================================
 
             addBotLog(
               `Manual proposal ready: ${data.proposal.id}`,
@@ -1445,11 +1730,45 @@ export default function BinarySpotPro() {
             );
           }
 
+          // ====================================================
+          // BUY
+          // ====================================================
+
           if (
             data.msg_type ===
               'buy' &&
             data.buy
           ) {
+            const resolved =
+              resolveBuyRequest(
+                requestGuardRef.current,
+                data
+              );
+
+            if (
+              !resolved.match.matched
+            ) {
+              addBotLog(
+                `Ignored unmatched BUY response${
+                  resolved.match.reqId !==
+                  null
+                    ? ` #${resolved.match.reqId}`
+                    : ''
+                }.`,
+                'error'
+              );
+
+              return;
+            }
+
+            const owner =
+              resolved.match.owner;
+
+            requestGuardRef.current =
+              resolved.guard;
+
+            syncRequestStatus();
+
             buyPendingRef.current =
               false;
 
@@ -1462,7 +1781,7 @@ export default function BinarySpotPro() {
 
             if (!contractId) {
               if (
-                autoBotRunningRef.current
+                isAutoOwner(owner)
               ) {
                 stopAutoBot(
                   'No contract ID returned.'
@@ -1472,8 +1791,33 @@ export default function BinarySpotPro() {
               return;
             }
 
-            contractOpenRef.current =
-              true;
+            /*
+             * The request guard owns the BUY classification.
+             *
+             * This is important if STOP was pressed after ws.send()
+             * but before Deriv returned the BUY response.
+             */
+            if (
+              isAutoOwner(owner) &&
+              lifecycleRef.current?.mode !==
+                'auto'
+            ) {
+              lifecycleRef.current =
+                beginTradeLifecycle({
+                  mode: 'auto',
+                });
+            }
+
+            if (
+              !isAutoOwner(owner) &&
+              lifecycleRef.current?.mode !==
+                'manual'
+            ) {
+              lifecycleRef.current =
+                beginTradeLifecycle({
+                  mode: 'manual',
+                });
+            }
 
             lifecycleRef.current =
               attachContractToLifecycle(
@@ -1482,6 +1826,9 @@ export default function BinarySpotPro() {
               );
 
             syncLifecycleLabel();
+
+            contractOpenRef.current =
+              true;
 
             setProposalData(null);
 
@@ -1506,22 +1853,16 @@ export default function BinarySpotPro() {
               'LIVE'
             );
 
-            const auto =
-              isAutoTrade(
-                lifecycleRef.current,
-                contractId
-              );
-
             setAutoBotStatus(
               `Contract #${contractId} active`
             );
 
             addBotLog(
               `${
-                auto
+                isAutoOwner(owner)
                   ? 'AUTO'
                   : 'MANUAL'
-              } demo contract purchased #${contractId}`,
+              } demo contract purchased #${contractId} | Req #${resolved.match.reqId}`,
               'success'
             );
 
@@ -1540,6 +1881,10 @@ export default function BinarySpotPro() {
               })
             );
           }
+
+          // ====================================================
+          // OPEN CONTRACT
+          // ====================================================
 
           if (
             data.msg_type ===
@@ -1622,6 +1967,10 @@ export default function BinarySpotPro() {
 
               return;
             }
+
+            // ==================================================
+            // SETTLED
+            // ==================================================
 
             contractOpenRef.current =
               false;
@@ -1760,6 +2109,7 @@ export default function BinarySpotPro() {
       handleAutoSettlement,
       stopAutoBot,
       syncLifecycleLabel,
+      syncRequestStatus,
     ]
   );
 
@@ -1901,7 +2251,11 @@ export default function BinarySpotPro() {
         lifecycleRef.current =
           createTradeLifecycle();
 
+        requestGuardRef.current =
+          resetRequestGuard();
+
         syncLifecycleLabel();
+        syncRequestStatus();
 
         setProposalData(null);
         setProposalError('');
@@ -1945,6 +2299,7 @@ export default function BinarySpotPro() {
       closeTradingSocket,
       connectTradingSocket,
       syncLifecycleLabel,
+      syncRequestStatus,
     ]
   );
 
@@ -2009,11 +2364,17 @@ export default function BinarySpotPro() {
         return;
       }
 
+      const requestStatus =
+        getRequestGuardStatus(
+          requestGuardRef.current
+        );
+
       if (
-        contractOpenRef.current
+        contractOpenRef.current ||
+        requestStatus.buyPending
       ) {
         setAuthError(
-          'Wait for the active contract to settle before switching accounts.'
+          'Wait for the active or in-flight contract purchase to finish before switching accounts.'
         );
 
         return;
@@ -2369,6 +2730,21 @@ export default function BinarySpotPro() {
   // ============================================================
 
   const startAutoBot = () => {
+    const requestPermission =
+      canStartNewBotSession(
+        requestGuardRef.current
+      );
+
+    if (
+      !requestPermission.allowed
+    ) {
+      setBuyError(
+        requestPermission.reason
+      );
+
+      return;
+    }
+
     const validation =
       validateBotSettings({
         accountType:
@@ -2462,12 +2838,6 @@ export default function BinarySpotPro() {
       startingStake.toFixed(2)
     );
 
-    proposalPendingRef.current =
-      false;
-
-    buyPendingRef.current =
-      false;
-
     cooldownUntilRef.current =
       0;
 
@@ -2475,6 +2845,8 @@ export default function BinarySpotPro() {
       createTradeLifecycle();
 
     syncLifecycleLabel();
+
+    syncRequestStatus();
 
     autoBotRunningRef.current =
       true;
@@ -2486,7 +2858,7 @@ export default function BinarySpotPro() {
     );
 
     addBotLog(
-      `PRECISION DIGIT ENGINE ACTIVE — ${strategy}`,
+      `REQUEST GUARD ACTIVE — ${strategy}`,
       'system'
     );
 
@@ -2525,6 +2897,21 @@ export default function BinarySpotPro() {
 
   const requestManualProposal =
     () => {
+      const requestPermission =
+        canStartNewBotSession(
+          requestGuardRef.current
+        );
+
+      if (
+        !requestPermission.allowed
+      ) {
+        setProposalError(
+          requestPermission.reason
+        );
+
+        return;
+      }
+
       if (
         emergencyStoppedRef.current
       ) {
@@ -2563,6 +2950,29 @@ export default function BinarySpotPro() {
             Number(baseStake)
           );
 
+        const registration =
+          beginProposalRequest(
+            requestGuardRef.current,
+            {
+              reqId:
+                payload.req_id,
+
+              owner:
+                REQUEST_OWNER.MANUAL,
+            }
+          );
+
+        if (!registration.valid) {
+          throw new Error(
+            registration.reason
+          );
+        }
+
+        requestGuardRef.current =
+          registration.guard;
+
+        syncRequestStatus();
+
         proposalPendingRef.current =
           true;
 
@@ -2576,6 +2986,13 @@ export default function BinarySpotPro() {
           )
         );
       } catch (error) {
+        requestGuardRef.current =
+          invalidateBotGeneration(
+            requestGuardRef.current
+          );
+
+        syncRequestStatus();
+
         lifecycleRef.current =
           createTradeLifecycle();
 
@@ -2639,6 +3056,21 @@ export default function BinarySpotPro() {
         return;
       }
 
+      const guardStatus =
+        getRequestGuardStatus(
+          requestGuardRef.current
+        );
+
+      if (
+        guardStatus.buyPending
+      ) {
+        setBuyError(
+          'A purchase request is already in flight.'
+        );
+
+        return;
+      }
+
       const price =
         Number(
           proposalData.ask_price
@@ -2682,10 +3114,45 @@ export default function BinarySpotPro() {
         syncLifecycleLabel();
       }
 
+      const buyReqId =
+        nextReqId();
+
+      const registration =
+        beginBuyRequest(
+          requestGuardRef.current,
+          {
+            reqId:
+              buyReqId,
+
+            owner:
+              REQUEST_OWNER.MANUAL,
+
+            proposalId:
+              proposalData.id,
+          }
+        );
+
+      if (
+        !registration.valid
+      ) {
+        setBuyError(
+          registration.reason
+        );
+
+        return;
+      }
+
+      requestGuardRef.current =
+        registration.guard;
+
+      syncRequestStatus();
+
       buyPendingRef.current =
         true;
 
       setBuyLoading(true);
+
+      setBuyError('');
 
       ws.send(
         JSON.stringify({
@@ -2695,7 +3162,7 @@ export default function BinarySpotPro() {
           price,
 
           req_id:
-            nextReqId(),
+            buyReqId,
         })
       );
     };
@@ -2725,9 +3192,16 @@ export default function BinarySpotPro() {
 
   const resetSessionStats =
     () => {
+      const requestStatus =
+        getRequestGuardStatus(
+          requestGuardRef.current
+        );
+
       if (
         isAutoBotRunning ||
-        contractOpenRef.current
+        contractOpenRef.current ||
+        requestStatus.proposalPending ||
+        requestStatus.buyPending
       ) {
         return;
       }
@@ -2767,7 +3241,11 @@ export default function BinarySpotPro() {
       lifecycleRef.current =
         createTradeLifecycle();
 
+      requestGuardRef.current =
+        resetRequestGuard();
+
       syncLifecycleLabel();
+      syncRequestStatus();
 
       setBotLogs([]);
 
@@ -2961,7 +3439,8 @@ export default function BinarySpotPro() {
                   }
                   disabled={
                     isAutoBotRunning ||
-                    isContractOpen
+                    isContractOpen ||
+                    buyLoading
                   }
                   className="bg-[#151d2d] border border-slate-700 rounded-xl px-3 py-2 text-xs"
                 >
@@ -3069,18 +3548,17 @@ export default function BinarySpotPro() {
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Precision Digit Feed Active
+                Request Guard Active
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Strategy Decisions Now Use Normalized Tick Digits.
+                Every Proposal and Purchase Has an Owner.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                Market quotes are normalized before their final
-                digit enters the analyzer and signal engine.
-                Deriv pip precision is used whenever it is
-                supplied by the tick feed.
+                WebSocket request IDs now separate current requests
+                from stale responses while preserving already-sent
+                purchase requests until Deriv confirms their result.
               </p>
             </div>
 
@@ -3108,12 +3586,11 @@ export default function BinarySpotPro() {
               />
 
               <StatBox
-                label="Confidence"
-                value={`${Number(
-                  signal.confidence ||
-                    0
-                ).toFixed(1)}%`}
-                accent="text-cyan-400"
+                label="Request Guard"
+                value={
+                  requestStatusLabel
+                }
+                accent="text-amber-400"
               />
 
               <StatBox
@@ -3145,9 +3622,8 @@ export default function BinarySpotPro() {
                 </h2>
 
                 <p className="mt-1 text-xs text-slate-400">
-                  Signal-controlled demo automation with
-                  precision digit parsing, lifecycle and session
-                  protection.
+                  Demo automation with precision digits, lifecycle
+                  ownership and request-ID protection.
                 </p>
               </div>
 
@@ -3302,7 +3778,9 @@ export default function BinarySpotPro() {
                       }}
                       disabled={
                         isAutoBotRunning ||
-                        isContractOpen
+                        isContractOpen ||
+                        proposalLoading ||
+                        buyLoading
                       }
                       className={
                         INPUT_CLASS
@@ -3341,7 +3819,9 @@ export default function BinarySpotPro() {
                       }
                       disabled={
                         isAutoBotRunning ||
-                        isContractOpen
+                        isContractOpen ||
+                        proposalLoading ||
+                        buyLoading
                       }
                       className={
                         INPUT_CLASS
@@ -3392,7 +3872,9 @@ export default function BinarySpotPro() {
                             )
                           }
                           disabled={
-                            isAutoBotRunning
+                            isAutoBotRunning ||
+                            proposalLoading ||
+                            buyLoading
                           }
                           className={
                             INPUT_CLASS
@@ -3408,6 +3890,8 @@ export default function BinarySpotPro() {
                           }
                           disabled={
                             isAutoBotRunning ||
+                            proposalLoading ||
+                            buyLoading ||
                             digitHistory.length ===
                               0
                           }
@@ -3707,7 +4191,9 @@ export default function BinarySpotPro() {
                         !isDemoAccount ||
                         !isTradingConnected ||
                         isContractOpen ||
-                        emergencyStopped
+                        emergencyStopped ||
+                        proposalLoading ||
+                        buyLoading
                       }
                       className="py-4 bg-emerald-500 disabled:opacity-40 text-black font-black rounded-xl"
                     >
@@ -3748,7 +4234,8 @@ export default function BinarySpotPro() {
                       clearEmergencyStop
                     }
                     disabled={
-                      isContractOpen
+                      isContractOpen ||
+                      buyLoading
                     }
                     className="w-full py-3 bg-slate-700 disabled:opacity-40 font-black rounded-xl"
                   >
@@ -3763,7 +4250,9 @@ export default function BinarySpotPro() {
                   }
                   disabled={
                     isAutoBotRunning ||
-                    isContractOpen
+                    isContractOpen ||
+                    proposalLoading ||
+                    buyLoading
                   }
                   className="w-full py-3 bg-slate-800 disabled:opacity-40 font-black rounded-xl"
                 >
@@ -3772,13 +4261,13 @@ export default function BinarySpotPro() {
 
                 {/* STATUS */}
 
-                <div className="grid sm:grid-cols-2 gap-3">
+                <div className="grid sm:grid-cols-3 gap-3">
                   <div className="border border-slate-800 rounded-2xl p-5">
                     <p className="text-[10px] uppercase text-slate-500 font-black">
                       Bot Status
                     </p>
 
-                    <p className="mt-2 font-mono text-cyan-400 font-black">
+                    <p className="mt-2 font-mono text-cyan-400 font-black text-xs">
                       {
                         autoBotStatus
                       }
@@ -3793,6 +4282,18 @@ export default function BinarySpotPro() {
                     <p className="mt-2 font-mono text-amber-400 font-black text-xs">
                       {
                         lifecycleLabel
+                      }
+                    </p>
+                  </div>
+
+                  <div className="border border-slate-800 rounded-2xl p-5">
+                    <p className="text-[10px] uppercase text-slate-500 font-black">
+                      Request Guard
+                    </p>
+
+                    <p className="mt-2 font-mono text-emerald-400 font-black text-xs">
+                      {
+                        requestStatusLabel
                       }
                     </p>
                   </div>
@@ -3897,6 +4398,7 @@ export default function BinarySpotPro() {
                           }
                           disabled={
                             proposalLoading ||
+                            buyLoading ||
                             !isTradingConnected
                           }
                           className="py-3 bg-cyan-500 disabled:opacity-40 text-black font-black rounded-xl"
@@ -3914,6 +4416,7 @@ export default function BinarySpotPro() {
                           disabled={
                             !proposalData ||
                             buyLoading ||
+                            proposalLoading ||
                             !isDemoAccount
                           }
                           className="py-3 bg-amber-400 disabled:opacity-40 text-black font-black rounded-xl"
