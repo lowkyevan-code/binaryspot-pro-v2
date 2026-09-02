@@ -16,9 +16,9 @@ const PUBLIC_WS_URL =
   'wss://api.derivws.com/trading/v1/options/ws/public';
 
 export default function BinarySpotPro() {
-  /* -----------------------------
+  /* =========================
      AUTH
-  ----------------------------- */
+  ========================= */
 
   const [isLoading, setIsLoading] =
     useState(true);
@@ -28,6 +28,11 @@ export default function BinarySpotPro() {
 
   const [isAuthorized, setIsAuthorized] =
     useState(false);
+
+  const [
+    isTradingConnected,
+    setIsTradingConnected,
+  ] = useState(false);
 
   const [accountId, setAccountId] =
     useState('');
@@ -44,16 +49,16 @@ export default function BinarySpotPro() {
   const [authError, setAuthError] =
     useState('');
 
-  /* -----------------------------
+  /* =========================
      NAVIGATION
-  ----------------------------- */
+  ========================= */
 
   const [activeTab, setActiveTab] =
     useState('overview');
 
-  /* -----------------------------
+  /* =========================
      MARKET DATA
-  ----------------------------- */
+  ========================= */
 
   const [
     isMarketConnected,
@@ -92,9 +97,9 @@ export default function BinarySpotPro() {
     odd: 50,
   });
 
-  /* -----------------------------
+  /* =========================
      BOT STUDIO
-  ----------------------------- */
+  ========================= */
 
   const [strategy, setStrategy] =
     useState('DIGITDIFF');
@@ -134,7 +139,9 @@ export default function BinarySpotPro() {
   const [
     simulationSignal,
     setSimulationSignal,
-  ] = useState('Waiting for bot start');
+  ] = useState(
+    'Waiting for bot start'
+  );
 
   const [
     simulatedTrades,
@@ -156,33 +163,61 @@ export default function BinarySpotPro() {
     setConsecutiveLosses,
   ] = useState(0);
 
+  const [botLogs, setBotLogs] =
+    useState([]);
+
+  /* =========================
+     PROPOSAL TESTING
+  ========================= */
+
   const [
-    botLogs,
-    setBotLogs,
-  ] = useState([]);
+    proposalLoading,
+    setProposalLoading,
+  ] = useState(false);
 
-  /* -----------------------------
+  const [
+    proposalError,
+    setProposalError,
+  ] = useState('');
+
+  const [
+    proposalData,
+    setProposalData,
+  ] = useState(null);
+
+  /* =========================
      REFS
-  ----------------------------- */
+  ========================= */
 
-  const wsRef = useRef(null);
-
-  const subscriptionRef =
+  const publicWsRef =
     useRef(null);
 
-  const pingRef = useRef(null);
+  const tradingWsRef =
+    useRef(null);
+
+  const publicSubscriptionRef =
+    useRef(null);
+
+  const publicPingRef =
+    useRef(null);
+
+  const tradingPingRef =
+    useRef(null);
 
   const botRunningRef =
     useRef(false);
+
+  const proposalReqIdRef =
+    useRef(1000);
 
   useEffect(() => {
     botRunningRef.current =
       isBotRunning;
   }, [isBotRunning]);
 
-  /* -----------------------------
-     LOGGING
-  ----------------------------- */
+  /* =========================
+     LOG
+  ========================= */
 
   const addBotLog =
     useCallback(
@@ -210,9 +245,185 @@ export default function BinarySpotPro() {
       []
     );
 
-  /* -----------------------------
-     AUTH SESSION
-  ----------------------------- */
+  /* =========================
+     TRADING SOCKET
+  ========================= */
+
+  const connectTradingSocket =
+    useCallback(
+      (wsUrl) => {
+        if (!wsUrl) {
+          setIsTradingConnected(
+            false
+          );
+
+          return;
+        }
+
+        if (
+          tradingWsRef.current
+        ) {
+          try {
+            tradingWsRef.current
+              .onclose = null;
+
+            tradingWsRef.current.close();
+          } catch {}
+        }
+
+        const ws =
+          new WebSocket(wsUrl);
+
+        tradingWsRef.current =
+          ws;
+
+        ws.onopen = () => {
+          setIsTradingConnected(
+            true
+          );
+
+          addBotLog(
+            'Authenticated Deriv trading socket connected.',
+            'system'
+          );
+
+          if (
+            tradingPingRef.current
+          ) {
+            clearInterval(
+              tradingPingRef.current
+            );
+          }
+
+          tradingPingRef.current =
+            setInterval(() => {
+              if (
+                ws.readyState ===
+                WebSocket.OPEN
+              ) {
+                ws.send(
+                  JSON.stringify({
+                    ping: 1,
+                  })
+                );
+              }
+            }, 30000);
+        };
+
+        ws.onmessage =
+          (event) => {
+            try {
+              const data =
+                JSON.parse(
+                  event.data
+                );
+
+              if (data.error) {
+                console.error(
+                  'Trading WS error:',
+                  data.error
+                );
+
+                if (
+                  data.msg_type ===
+                    'proposal' ||
+                  data.echo_req
+                    ?.proposal ===
+                    1
+                ) {
+                  setProposalLoading(
+                    false
+                  );
+
+                  setProposalError(
+                    data.error
+                      .message ||
+                      'Proposal rejected.'
+                  );
+
+                  addBotLog(
+                    `Proposal rejected: ${
+                      data.error
+                        .message ||
+                      'Unknown error'
+                    }`,
+                    'error'
+                  );
+                }
+
+                return;
+              }
+
+              if (
+                data.msg_type ===
+                  'proposal' &&
+                data.proposal
+              ) {
+                setProposalLoading(
+                  false
+                );
+
+                setProposalError(
+                  ''
+                );
+
+                setProposalData(
+                  data.proposal
+                );
+
+                addBotLog(
+                  `Live proposal received. ID: ${data.proposal.id}`,
+                  'success'
+                );
+              }
+
+              if (
+                data.msg_type ===
+                  'balance' &&
+                data.balance
+              ) {
+                setBalance(
+                  data.balance
+                    .balance
+                );
+
+                setCurrency(
+                  data.balance
+                    .currency ||
+                    'USD'
+                );
+              }
+            } catch (error) {
+              console.error(
+                'Trading message parse error:',
+                error
+              );
+            }
+          };
+
+        ws.onerror = () => {
+          setIsTradingConnected(
+            false
+          );
+
+          addBotLog(
+            'Authenticated trading socket error.',
+            'error'
+          );
+        };
+
+        ws.onclose = () => {
+          setIsTradingConnected(
+            false
+          );
+        };
+      },
+      [addBotLog]
+    );
+
+  /* =========================
+     SESSION
+  ========================= */
 
   const loadDerivSession =
     useCallback(async () => {
@@ -238,6 +449,10 @@ export default function BinarySpotPro() {
           !data.authenticated
         ) {
           setIsAuthorized(
+            false
+          );
+
+          setIsTradingConnected(
             false
           );
 
@@ -287,6 +502,12 @@ export default function BinarySpotPro() {
         );
 
         setAuthError('');
+
+        if (data.wsUrl) {
+          connectTradingSocket(
+            data.wsUrl
+          );
+        }
       } catch (error) {
         console.error(
           'Session loading error:',
@@ -297,13 +518,19 @@ export default function BinarySpotPro() {
           false
         );
 
+        setIsTradingConnected(
+          false
+        );
+
         setAuthError(
           'Unable to load your Deriv account.'
         );
       } finally {
         setIsLoading(false);
       }
-    }, []);
+    }, [
+      connectTradingSocket,
+    ]);
 
   useEffect(() => {
     const params =
@@ -339,11 +566,30 @@ export default function BinarySpotPro() {
     }
 
     loadDerivSession();
+
+    return () => {
+      if (
+        tradingPingRef.current
+      ) {
+        clearInterval(
+          tradingPingRef.current
+        );
+      }
+
+      if (
+        tradingWsRef.current
+      ) {
+        tradingWsRef.current
+          .onclose = null;
+
+        tradingWsRef.current.close();
+      }
+    };
   }, [loadDerivSession]);
 
-  /* -----------------------------
-     DIGIT STATISTICS
-  ----------------------------- */
+  /* =========================
+     DIGIT STATS
+  ========================= */
 
   const updateDigitStats =
     useCallback((digit) => {
@@ -407,9 +653,9 @@ export default function BinarySpotPro() {
       );
     }, []);
 
-  /* -----------------------------
-     SIMULATION ENGINE
-  ----------------------------- */
+  /* =========================
+     SIMULATION
+  ========================= */
 
   const evaluateBotTick =
     useCallback(
@@ -551,19 +797,19 @@ export default function BinarySpotPro() {
       ]
     );
 
-  /* -----------------------------
-     PUBLIC MARKET WEBSOCKET
-  ----------------------------- */
+  /* =========================
+     PUBLIC MARKET SOCKET
+  ========================= */
 
   const connectMarket =
     useCallback(() => {
       if (
-        wsRef.current &&
+        publicWsRef.current &&
         (
-          wsRef.current
+          publicWsRef.current
             .readyState ===
             WebSocket.OPEN ||
-          wsRef.current
+          publicWsRef.current
             .readyState ===
             WebSocket.CONNECTING
         )
@@ -576,7 +822,8 @@ export default function BinarySpotPro() {
           PUBLIC_WS_URL
         );
 
-      wsRef.current = ws;
+      publicWsRef.current =
+        ws;
 
       ws.onopen = () => {
         setIsMarketConnected(
@@ -591,14 +838,14 @@ export default function BinarySpotPro() {
         );
 
         if (
-          pingRef.current
+          publicPingRef.current
         ) {
           clearInterval(
-            pingRef.current
+            publicPingRef.current
           );
         }
 
-        pingRef.current =
+        publicPingRef.current =
           setInterval(() => {
             if (
               ws.readyState ===
@@ -623,7 +870,7 @@ export default function BinarySpotPro() {
 
             if (data.error) {
               console.error(
-                'Deriv market error:',
+                'Public WS error:',
                 data.error
               );
 
@@ -639,7 +886,7 @@ export default function BinarySpotPro() {
                 data.subscription
                   ?.id
               ) {
-                subscriptionRef.current =
+                publicSubscriptionRef.current =
                   data
                     .subscription
                     .id;
@@ -728,31 +975,31 @@ export default function BinarySpotPro() {
 
     return () => {
       if (
-        pingRef.current
+        publicPingRef.current
       ) {
         clearInterval(
-          pingRef.current
+          publicPingRef.current
         );
       }
 
       if (
-        wsRef.current
+        publicWsRef.current
       ) {
-        wsRef.current.onclose =
-          null;
+        publicWsRef.current
+          .onclose = null;
 
-        wsRef.current.close();
+        publicWsRef.current.close();
       }
     };
   }, [connectMarket]);
 
-  /* -----------------------------
+  /* =========================
      SYMBOL CHANGE
-  ----------------------------- */
+  ========================= */
 
   useEffect(() => {
     const ws =
-      wsRef.current;
+      publicWsRef.current;
 
     if (
       !ws ||
@@ -763,16 +1010,16 @@ export default function BinarySpotPro() {
     }
 
     if (
-      subscriptionRef.current
+      publicSubscriptionRef.current
     ) {
       ws.send(
         JSON.stringify({
           forget:
-            subscriptionRef.current,
+            publicSubscriptionRef.current,
         })
       );
 
-      subscriptionRef.current =
+      publicSubscriptionRef.current =
         null;
     }
 
@@ -787,6 +1034,9 @@ export default function BinarySpotPro() {
       odd: 50,
     });
 
+    setProposalData(null);
+    setProposalError('');
+
     ws.send(
       JSON.stringify({
         ticks: symbol,
@@ -795,9 +1045,9 @@ export default function BinarySpotPro() {
     );
   }, [symbol]);
 
-  /* -----------------------------
-     OAUTH START
-  ----------------------------- */
+  /* =========================
+     OAUTH
+  ========================= */
 
   const connectDeriv =
     async () => {
@@ -947,9 +1197,9 @@ export default function BinarySpotPro() {
       }
     };
 
-  /* -----------------------------
+  /* =========================
      BOT CONTROLS
-  ----------------------------- */
+  ========================= */
 
   const startBot = () => {
     if (
@@ -1004,7 +1254,175 @@ export default function BinarySpotPro() {
     );
 
     setBotLogs([]);
+
+    setProposalData(null);
+    setProposalError('');
   };
+
+  /* =========================
+     PROPOSAL REQUEST
+  ========================= */
+
+  const requestLiveProposal =
+    () => {
+      setProposalError('');
+      setProposalData(null);
+
+      if (!isAuthorized) {
+        setProposalError(
+          'Connect your Deriv account first.'
+        );
+
+        return;
+      }
+
+      const ws =
+        tradingWsRef.current;
+
+      if (
+        !ws ||
+        ws.readyState !==
+          WebSocket.OPEN
+      ) {
+        setProposalError(
+          'Authenticated trading connection is not ready.'
+        );
+
+        addBotLog(
+          'Proposal blocked: trading socket is offline.',
+          'error'
+        );
+
+        return;
+      }
+
+      const parsedStake =
+        Number(stake);
+
+      const parsedDuration =
+        Number(duration);
+
+      const parsedPrediction =
+        Number(
+          predictionDigit
+        );
+
+      if (
+        !Number.isFinite(
+          parsedStake
+        ) ||
+        parsedStake <= 0
+      ) {
+        setProposalError(
+          'Enter a valid stake.'
+        );
+
+        return;
+      }
+
+      if (
+        !Number.isInteger(
+          parsedDuration
+        ) ||
+        parsedDuration < 1
+      ) {
+        setProposalError(
+          'Duration must be at least 1 tick.'
+        );
+
+        return;
+      }
+
+      if (
+        [
+          'DIGITDIFF',
+          'DIGITMATCH',
+          'DIGITOVER',
+          'DIGITUNDER',
+        ].includes(strategy) &&
+        (
+          !Number.isInteger(
+            parsedPrediction
+          ) ||
+          parsedPrediction < 0 ||
+          parsedPrediction > 9
+        )
+      ) {
+        setProposalError(
+          'Prediction digit must be between 0 and 9.'
+        );
+
+        return;
+      }
+
+      const reqId =
+        ++proposalReqIdRef.current;
+
+      const payload = {
+        proposal: 1,
+        amount: parsedStake,
+        basis: 'stake',
+        contract_type:
+          strategy,
+        currency:
+          currency || 'USD',
+        duration:
+          parsedDuration,
+        duration_unit: 't',
+        symbol,
+        req_id: reqId,
+      };
+
+      if (
+        [
+          'DIGITDIFF',
+          'DIGITMATCH',
+          'DIGITOVER',
+          'DIGITUNDER',
+        ].includes(strategy)
+      ) {
+        payload.barrier =
+          String(
+            parsedPrediction
+          );
+      }
+
+      try {
+        setProposalLoading(
+          true
+        );
+
+        addBotLog(
+          `Requesting live ${strategy} proposal for ${symbol} at ${currency} ${parsedStake.toFixed(
+            2
+          )}.`,
+          'system'
+        );
+
+        ws.send(
+          JSON.stringify(
+            payload
+          )
+        );
+      } catch (error) {
+        console.error(
+          'Proposal request error:',
+          error
+        );
+
+        setProposalLoading(
+          false
+        );
+
+        setProposalError(
+          'Unable to send proposal request.'
+        );
+      }
+    };
+
+  /* =========================
+     DERIVED VALUES
+  ========================= */
 
   const formattedQuote =
     lastTick !== null
@@ -1034,9 +1452,9 @@ export default function BinarySpotPro() {
       'DIGITUNDER',
     ].includes(strategy);
 
-  /* -----------------------------
+  /* =========================
      UI
-  ----------------------------- */
+  ========================= */
 
   return (
     <main className="min-h-screen bg-[#080b11] text-slate-100">
@@ -1047,21 +1465,45 @@ export default function BinarySpotPro() {
 
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-4">
 
-            <span
-              className={`h-2.5 w-2.5 rounded-full ${
-                isMarketConnected
-                  ? 'bg-emerald-400'
-                  : 'bg-rose-500'
-              }`}
-            />
+            <div className="flex items-center gap-2">
 
-            <span className="font-semibold text-slate-300">
-              {isMarketConnected
-                ? 'Deriv Market Feed Active'
-                : 'Market Feed Offline'}
-            </span>
+              <span
+                className={`h-2.5 w-2.5 rounded-full ${
+                  isMarketConnected
+                    ? 'bg-emerald-400'
+                    : 'bg-rose-500'
+                }`}
+              />
+
+              <span className="font-semibold text-slate-300">
+                {isMarketConnected
+                  ? 'Market Feed Active'
+                  : 'Market Feed Offline'}
+              </span>
+
+            </div>
+
+            {isAuthorized && (
+              <div className="flex items-center gap-2">
+
+                <span
+                  className={`h-2.5 w-2.5 rounded-full ${
+                    isTradingConnected
+                      ? 'bg-cyan-400'
+                      : 'bg-amber-400'
+                  }`}
+                />
+
+                <span className="font-semibold text-slate-300">
+                  {isTradingConnected
+                    ? 'Trading Socket Active'
+                    : 'Trading Socket Offline'}
+                </span>
+
+              </div>
+            )}
 
           </div>
 
@@ -1242,8 +1684,11 @@ export default function BinarySpotPro() {
               <div className="max-w-2xl space-y-5">
 
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold">
+
                   <span className="h-2 w-2 rounded-full bg-emerald-400" />
+
                   BinarySpot Pro Trading Platform
+
                 </div>
 
                 <h1 className="text-4xl sm:text-5xl font-black text-white tracking-tight leading-tight">
@@ -1251,7 +1696,7 @@ export default function BinarySpotPro() {
                 </h1>
 
                 <p className="text-slate-400 text-sm sm:text-base leading-relaxed">
-                  Live market data, digit analytics and bot strategy testing are now active.
+                  OAuth, live tick streaming and authenticated Deriv trading connectivity are active.
                 </p>
 
                 <button
@@ -1265,6 +1710,64 @@ export default function BinarySpotPro() {
                 >
                   Open Bot Studio
                 </button>
+
+              </div>
+
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+              <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5">
+
+                <p className="text-[10px] uppercase font-black text-slate-500">
+                  OAuth
+                </p>
+
+                <p className={`mt-2 font-black ${
+                  isAuthorized
+                    ? 'text-emerald-400'
+                    : 'text-rose-400'
+                }`}>
+                  {isAuthorized
+                    ? 'Connected'
+                    : 'Offline'}
+                </p>
+
+              </div>
+
+              <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5">
+
+                <p className="text-[10px] uppercase font-black text-slate-500">
+                  Market Feed
+                </p>
+
+                <p className={`mt-2 font-black ${
+                  isMarketConnected
+                    ? 'text-emerald-400'
+                    : 'text-rose-400'
+                }`}>
+                  {isMarketConnected
+                    ? 'Connected'
+                    : 'Offline'}
+                </p>
+
+              </div>
+
+              <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5">
+
+                <p className="text-[10px] uppercase font-black text-slate-500">
+                  Trading Socket
+                </p>
+
+                <p className={`mt-2 font-black ${
+                  isTradingConnected
+                    ? 'text-cyan-400'
+                    : 'text-amber-400'
+                }`}>
+                  {isTradingConnected
+                    ? 'Authenticated'
+                    : 'Offline'}
+                </p>
 
               </div>
 
@@ -1288,7 +1791,7 @@ export default function BinarySpotPro() {
                 </h2>
 
                 <p className="text-xs text-slate-400 mt-1">
-                  Strategy simulation using your live Deriv tick feed.
+                  Live strategy testing and Deriv price proposal validation.
                 </p>
 
               </div>
@@ -1311,14 +1814,14 @@ export default function BinarySpotPro() {
 
               <div className="lg:col-span-2 bg-[#0f1522] border border-slate-800 rounded-2xl p-6 space-y-6">
 
-                <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+                <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4">
 
-                  <p className="text-xs font-black uppercase tracking-wider text-amber-400">
-                    Simulation Mode
+                  <p className="text-xs font-black uppercase tracking-wider text-cyan-400">
+                    Proposal Test Mode
                   </p>
 
                   <p className="mt-1 text-xs text-slate-400">
-                    No real Deriv orders are being placed yet.
+                    BinarySpot Pro can now request a real Deriv contract quote. No purchase is sent.
                   </p>
 
                 </div>
@@ -1370,15 +1873,21 @@ export default function BinarySpotPro() {
                     </label>
 
                     <select
-                      value={
-                        strategy
-                      }
-                      onChange={(event) =>
+                      value={strategy}
+                      onChange={(event) => {
                         setStrategy(
                           event.target
                             .value
-                        )
-                      }
+                        );
+
+                        setProposalData(
+                          null
+                        );
+
+                        setProposalError(
+                          ''
+                        );
+                      }}
                       disabled={
                         isBotRunning
                       }
@@ -1592,29 +2101,140 @@ export default function BinarySpotPro() {
 
                 </div>
 
-                {!isBotRunning ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+                  {!isBotRunning ? (
+                    <button
+                      type="button"
+                      onClick={startBot}
+                      className="py-4 bg-gradient-to-r from-emerald-500 to-teal-400 text-black font-black text-sm uppercase tracking-wider rounded-xl"
+                    >
+                      ▶ Start Simulation
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={stopBot}
+                      className="py-4 bg-rose-600 text-white font-black text-sm uppercase tracking-wider rounded-xl"
+                    >
+                      ⏹ Stop Simulation
+                    </button>
+                  )}
+
                   <button
                     type="button"
-                    onClick={startBot}
-                    className="w-full py-4 bg-gradient-to-r from-emerald-500 to-teal-400 text-black font-black text-sm uppercase tracking-wider rounded-xl"
+                    onClick={
+                      requestLiveProposal
+                    }
+                    disabled={
+                      proposalLoading ||
+                      !isTradingConnected
+                    }
+                    className="py-4 bg-cyan-500 disabled:opacity-40 text-black font-black text-sm uppercase tracking-wider rounded-xl"
                   >
-                    ▶ Start Simulation
+                    {proposalLoading
+                      ? 'Requesting Quote...'
+                      : 'Get Live Proposal'}
                   </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={stopBot}
-                    className="w-full py-4 bg-rose-600 text-white font-black text-sm uppercase tracking-wider rounded-xl"
-                  >
-                    ⏹ Stop Simulation
-                  </button>
+
+                </div>
+
+                {proposalError && (
+                  <div className="rounded-xl border border-rose-800 bg-rose-950/30 p-4 text-xs text-rose-300">
+                    ⚠️ {proposalError}
+                  </div>
+                )}
+
+                {proposalData && (
+                  <div className="rounded-2xl border border-cyan-500/30 bg-cyan-950/10 p-5">
+
+                    <div className="flex flex-wrap justify-between gap-4">
+
+                      <div>
+
+                        <p className="text-[10px] uppercase tracking-wider font-black text-cyan-400">
+                          Deriv Live Proposal
+                        </p>
+
+                        <p className="mt-1 text-xs font-mono text-slate-400 break-all">
+                          ID: {proposalData.id}
+                        </p>
+
+                      </div>
+
+                      <span className="px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs font-black text-emerald-400">
+                        Quote Received
+                      </span>
+
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
+
+                      <div className="bg-[#080b11] border border-slate-800 rounded-xl p-3">
+
+                        <p className="text-[9px] uppercase text-slate-500">
+                          Ask Price
+                        </p>
+
+                        <p className="mt-1 font-mono font-black text-white">
+                          {proposalData.ask_price ??
+                            '-'}
+                        </p>
+
+                      </div>
+
+                      <div className="bg-[#080b11] border border-slate-800 rounded-xl p-3">
+
+                        <p className="text-[9px] uppercase text-slate-500">
+                          Payout
+                        </p>
+
+                        <p className="mt-1 font-mono font-black text-emerald-400">
+                          {proposalData.payout ??
+                            '-'}
+                        </p>
+
+                      </div>
+
+                      <div className="bg-[#080b11] border border-slate-800 rounded-xl p-3">
+
+                        <p className="text-[9px] uppercase text-slate-500">
+                          Spot
+                        </p>
+
+                        <p className="mt-1 font-mono font-black text-amber-400">
+                          {proposalData.spot ??
+                            '-'}
+                        </p>
+
+                      </div>
+
+                      <div className="bg-[#080b11] border border-slate-800 rounded-xl p-3">
+
+                        <p className="text-[9px] uppercase text-slate-500">
+                          Contract
+                        </p>
+
+                        <p className="mt-1 text-xs font-black text-cyan-400">
+                          {strategy}
+                        </p>
+
+                      </div>
+
+                    </div>
+
+                    <p className="mt-4 text-[11px] text-slate-500">
+                      This quote has not been purchased.
+                    </p>
+
+                  </div>
                 )}
 
               </div>
 
-              {/* LOGS */}
+              {/* BOT STREAM */}
 
-              <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5 flex flex-col min-h-[550px]">
+              <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5 flex flex-col min-h-[600px]">
 
                 <div className="flex justify-between items-center border-b border-slate-800 pb-3">
 
@@ -1699,7 +2319,7 @@ export default function BinarySpotPro() {
                   {botLogs.length ===
                   0 ? (
                     <div className="h-full flex items-center justify-center text-center text-xs text-slate-600">
-                      Start the simulation to test the strategy against live ticks.
+                      Strategy and proposal activity will appear here.
                     </div>
                   ) : (
                     botLogs.map(
@@ -1721,11 +2341,13 @@ export default function BinarySpotPro() {
                               : 'bg-slate-900 border-slate-800 text-slate-400'
                           }`}
                         >
+
                           <span className="opacity-50 mr-2">
                             [{log.time}]
                           </span>
 
                           {log.message}
+
                         </div>
                       )
                     )
