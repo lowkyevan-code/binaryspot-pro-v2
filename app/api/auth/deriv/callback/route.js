@@ -3,68 +3,31 @@ import { NextResponse } from 'next/server';
 const CLIENT_ID = '34hh45FQkPfMgbgj20uoR';
 
 const REDIRECT_URI =
-  'https://binaryspot-pro-v2.vercel.app/api/auth/deriv/callback';
+  'https://binaryspot-pro-v2.vercel.app/auth/deriv/callback';
 
 const TOKEN_URL =
   'https://auth.deriv.com/oauth2/token';
 
-const HOME_URL =
-  'https://binaryspot-pro-v2.vercel.app';
-
-export async function GET(request) {
+export async function POST(request) {
   try {
-    const url = new URL(request.url);
+    const body = await request.json();
 
-    const code = url.searchParams.get('code');
-    const returnedState = url.searchParams.get('state');
+    const code = body?.code;
+    const codeVerifier = body?.codeVerifier;
 
-    const oauthError = url.searchParams.get('error');
-    const oauthErrorDescription =
-      url.searchParams.get('error_description');
-
-    if (oauthError) {
-      return NextResponse.redirect(
-        `${HOME_URL}/?deriv_error=${encodeURIComponent(
-          oauthErrorDescription || oauthError
-        )}`
+    if (!code || !codeVerifier) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Missing OAuth code or PKCE verifier.',
+        },
+        {
+          status: 400,
+        }
       );
     }
 
-    const savedState =
-      request.cookies.get('deriv_oauth_state')?.value;
-
-    const codeVerifier =
-      request.cookies.get('deriv_pkce_verifier')?.value;
-
-    if (!code) {
-      return NextResponse.redirect(
-        `${HOME_URL}/?deriv_error=${encodeURIComponent(
-          'Authorization code missing.'
-        )}`
-      );
-    }
-
-    if (
-      !savedState ||
-      !returnedState ||
-      savedState !== returnedState
-    ) {
-      return NextResponse.redirect(
-        `${HOME_URL}/?deriv_error=${encodeURIComponent(
-          'OAuth state validation failed.'
-        )}`
-      );
-    }
-
-    if (!codeVerifier) {
-      return NextResponse.redirect(
-        `${HOME_URL}/?deriv_error=${encodeURIComponent(
-          'PKCE verifier missing.'
-        )}`
-      );
-    }
-
-    const body = new URLSearchParams({
+    const tokenBody = new URLSearchParams({
       grant_type: 'authorization_code',
       client_id: CLIENT_ID,
       code,
@@ -72,17 +35,21 @@ export async function GET(request) {
       redirect_uri: REDIRECT_URI,
     });
 
-    const tokenResponse = await fetch(TOKEN_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type':
-          'application/x-www-form-urlencoded',
-      },
-      body: body.toString(),
-      cache: 'no-store',
-    });
+    const tokenResponse = await fetch(
+      TOKEN_URL,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type':
+            'application/x-www-form-urlencoded',
+        },
+        body: tokenBody.toString(),
+        cache: 'no-store',
+      }
+    );
 
-    const tokenData = await tokenResponse.json();
+    const tokenData =
+      await tokenResponse.json();
 
     if (
       !tokenResponse.ok ||
@@ -93,16 +60,24 @@ export async function GET(request) {
         tokenData
       );
 
-      return NextResponse.redirect(
-        `${HOME_URL}/?deriv_error=${encodeURIComponent(
-          'Token exchange failed.'
-        )}`
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            tokenData?.error_description ||
+            tokenData?.error ||
+            'Deriv token exchange failed.',
+        },
+        {
+          status: tokenResponse.status || 400,
+        }
       );
     }
 
-    const response = NextResponse.redirect(
-      `${HOME_URL}/?deriv_connected=1`
-    );
+    const response =
+      NextResponse.json({
+        success: true,
+      });
 
     response.cookies.set(
       'deriv_access_token',
@@ -113,29 +88,27 @@ export async function GET(request) {
         sameSite: 'lax',
         path: '/',
         maxAge:
-          Number(tokenData.expires_in) || 3600,
+          Number(tokenData.expires_in) ||
+          3600,
       }
-    );
-
-    response.cookies.delete(
-      'deriv_oauth_state'
-    );
-
-    response.cookies.delete(
-      'deriv_pkce_verifier'
     );
 
     return response;
   } catch (error) {
     console.error(
-      'Deriv OAuth callback error:',
+      'Deriv OAuth callback API error:',
       error
     );
 
-    return NextResponse.redirect(
-      `${HOME_URL}/?deriv_error=${encodeURIComponent(
-        'Unable to complete Deriv login.'
-      )}`
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          'Unable to complete Deriv authorization.',
+      },
+      {
+        status: 500,
+      }
     );
   }
 }
