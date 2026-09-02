@@ -339,6 +339,8 @@ export default function BinarySpotPro() {
 
   const digitHistoryRef = useRef([]);
 
+  const symbolRef = useRef('R_100');
+
   const accountIdRef = useRef('');
   const accountTypeRef = useRef('');
   const currencyRef = useRef('USD');
@@ -390,6 +392,11 @@ export default function BinarySpotPro() {
     emergencyStoppedRef.current =
       emergencyStopped;
   }, [emergencyStopped]);
+
+  useEffect(() => {
+    symbolRef.current =
+      symbol;
+  }, [symbol]);
 
   useEffect(() => {
     accountIdRef.current =
@@ -624,11 +631,7 @@ export default function BinarySpotPro() {
           recoveryTimerRef.current =
             null;
 
-          if (
-            recoveryRunnerRef.current
-          ) {
-            recoveryRunnerRef.current();
-          }
+          recoveryRunnerRef.current?.();
         }, delay);
     },
     []
@@ -844,6 +847,9 @@ export default function BinarySpotPro() {
       const currentStrategy =
         strategyRef.current;
 
+      const currentSymbol =
+        symbolRef.current;
+
       const prediction =
         signalPrediction !== null &&
         signalPrediction !== undefined
@@ -880,6 +886,12 @@ export default function BinarySpotPro() {
       ) {
         throw new Error(
           'Duration must be at least 1 tick.'
+        );
+      }
+
+      if (!currentSymbol) {
+        throw new Error(
+          'A trading symbol is required.'
         );
       }
 
@@ -924,7 +936,7 @@ export default function BinarySpotPro() {
         duration_unit: 't',
 
         underlying_symbol:
-          symbol,
+          currentSymbol,
 
         req_id:
           nextReqId(),
@@ -944,7 +956,7 @@ export default function BinarySpotPro() {
 
       return payload;
     },
-    [symbol]
+    []
   );
 
   // ============================================================
@@ -1080,7 +1092,7 @@ export default function BinarySpotPro() {
         );
 
         addBotLog(
-          `ENTRY | ${strategyRef.current} | Confidence ${confidence.toFixed(
+          `ENTRY | ${strategyRef.current} | ${symbolRef.current} | Confidence ${confidence.toFixed(
             1
           )}% | Stake ${currencyRef.current} ${stake.toFixed(
             2
@@ -1359,7 +1371,8 @@ export default function BinarySpotPro() {
               contract.contract_type ||
               strategyRef.current,
 
-            symbol,
+            symbol:
+              symbolRef.current,
 
             time:
               new Date().toLocaleTimeString(),
@@ -1559,7 +1572,6 @@ export default function BinarySpotPro() {
       );
     },
     [
-      symbol,
       addBotLog,
       stopAutoBot,
       syncLifecycleLabel,
@@ -1908,10 +1920,6 @@ export default function BinarySpotPro() {
             const owner =
               resolved.match.owner;
 
-            // ==================================================
-            // AUTO PROPOSAL
-            // ==================================================
-
             if (
               isAutoOwner(owner)
             ) {
@@ -2031,10 +2039,6 @@ export default function BinarySpotPro() {
 
               return;
             }
-
-            // ==================================================
-            // MANUAL PROPOSAL
-            // ==================================================
 
             const freshnessRegistration =
               registerProposalFreshness(
@@ -2553,6 +2557,7 @@ export default function BinarySpotPro() {
     },
     [
       addBotLog,
+      clearManualProposal,
       clearRecoveryTimer,
       handleAutoSettlement,
       queueContractRecovery,
@@ -2560,7 +2565,6 @@ export default function BinarySpotPro() {
       syncLifecycleLabel,
       syncRecoveryLabel,
       syncRequestStatus,
-      clearManualProposal,
     ]
   );
 
@@ -3505,7 +3509,7 @@ export default function BinarySpotPro() {
     );
 
     addBotLog(
-      `PROPOSAL FRESHNESS GUARD ACTIVE — ${strategy}`,
+      `STABLE SOCKET CALLBACKS ACTIVE — ${strategy}`,
       'system'
     );
 
@@ -3901,6 +3905,66 @@ export default function BinarySpotPro() {
         String(
           suggestion
         )
+      );
+    };
+
+  // ============================================================
+  // SYMBOL CHANGE
+  // ============================================================
+
+  const changeSymbol =
+    (nextSymbol) => {
+      if (!nextSymbol) {
+        return;
+      }
+
+      clearManualProposal();
+
+      symbolRef.current =
+        nextSymbol;
+
+      setSymbol(
+        nextSymbol
+      );
+
+      digitHistoryRef.current =
+        [];
+
+      setDigitHistory(
+        []
+      );
+
+      setLastDigit(
+        null
+      );
+
+      setLastTick(
+        null
+      );
+
+      setPrevTick(
+        null
+      );
+
+      setFormattedTick(
+        'Waiting...'
+      );
+
+      setPipSize(
+        null
+      );
+
+      setPipSource(
+        'none'
+      );
+
+      setUsedPipSize(
+        false
+      );
+
+      addBotLog(
+        `Public market feed switching to ${nextSymbol}. Authenticated trading socket remains unchanged.`,
+        'system'
       );
     };
 
@@ -4320,17 +4384,17 @@ export default function BinarySpotPro() {
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Proposal Freshness Guard Active
+                Stable Socket Architecture
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Fresh Manual Proposals Only.
+                Market Changes Without Trading Session Churn.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                Manual demo proposals are now timestamped when they
-                arrive. If the proposal sits too long, BinarySpot Pro
-                blocks the purchase and requires a fresh quote.
+                Public market subscriptions can now change symbols
+                independently while the authenticated Deriv trading
+                connection remains stable.
               </p>
             </div>
 
@@ -4403,9 +4467,9 @@ export default function BinarySpotPro() {
                 </h2>
 
                 <p className="mt-1 text-xs text-slate-400">
-                  Demo automation with proposal freshness,
-                  cached tick precision, request-ID protection,
-                  lifecycle ownership and contract recovery.
+                  Demo automation with stable authenticated socket
+                  callbacks, proposal freshness, precision cache,
+                  request protection and contract recovery.
                 </p>
               </div>
 
@@ -4520,48 +4584,11 @@ export default function BinarySpotPro() {
                       }
                       onChange={(
                         event
-                      ) => {
-                        clearManualProposal();
-
-                        setSymbol(
+                      ) =>
+                        changeSymbol(
                           event.target.value
-                        );
-
-                        digitHistoryRef.current =
-                          [];
-
-                        setDigitHistory(
-                          []
-                        );
-
-                        setLastDigit(
-                          null
-                        );
-
-                        setLastTick(
-                          null
-                        );
-
-                        setPrevTick(
-                          null
-                        );
-
-                        setFormattedTick(
-                          'Waiting...'
-                        );
-
-                        setPipSize(
-                          null
-                        );
-
-                        setPipSource(
-                          'none'
-                        );
-
-                        setUsedPipSize(
-                          false
-                        );
-                      }}
+                        )
+                      }
                       disabled={
                         isAutoBotRunning ||
                         isContractOpen ||
