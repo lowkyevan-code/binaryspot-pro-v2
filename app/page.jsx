@@ -16,542 +16,266 @@ const PUBLIC_WS_URL =
   'wss://api.derivws.com/trading/v1/options/ws/public';
 
 export default function BinarySpotPro() {
-  /* =========================
-     AUTH
-  ========================= */
+  const [isLoading, setIsLoading] = useState(true);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isAuthorized, setIsAuthorized] = useState(false);
+  const [isTradingConnected, setIsTradingConnected] = useState(false);
 
-  const [isLoading, setIsLoading] =
-    useState(true);
+  const [accountId, setAccountId] = useState('');
+  const [balance, setBalance] = useState(null);
+  const [currency, setCurrency] = useState('USD');
+  const [accountType, setAccountType] = useState('');
+  const [authError, setAuthError] = useState('');
 
-  const [isConnecting, setIsConnecting] =
-    useState(false);
+  const [activeTab, setActiveTab] = useState('overview');
 
-  const [isAuthorized, setIsAuthorized] =
-    useState(false);
-
-  const [
-    isTradingConnected,
-    setIsTradingConnected,
-  ] = useState(false);
-
-  const [accountId, setAccountId] =
-    useState('');
-
-  const [balance, setBalance] =
-    useState(null);
-
-  const [currency, setCurrency] =
-    useState('USD');
-
-  const [accountType, setAccountType] =
-    useState('');
-
-  const [authError, setAuthError] =
-    useState('');
-
-  /* =========================
-     NAVIGATION
-  ========================= */
-
-  const [activeTab, setActiveTab] =
-    useState('overview');
-
-  /* =========================
-     MARKET DATA
-  ========================= */
-
-  const [
-    isMarketConnected,
-    setIsMarketConnected,
-  ] = useState(false);
-
-  const [symbol, setSymbol] =
-    useState('R_100');
-
-  const [lastTick, setLastTick] =
-    useState(null);
-
-  const [prevTick, setPrevTick] =
-    useState(null);
-
-  const [lastDigit, setLastDigit] =
-    useState(null);
-
-  const [
-    digitHistory,
-    setDigitHistory,
-  ] = useState([]);
-
-  const [
-    digitStats,
-    setDigitStats,
-  ] = useState(
-    Array(10).fill(0)
-  );
-
-  const [
-    evenOddRatio,
-    setEvenOddRatio,
-  ] = useState({
+  const [isMarketConnected, setIsMarketConnected] = useState(false);
+  const [symbol, setSymbol] = useState('R_100');
+  const [lastTick, setLastTick] = useState(null);
+  const [prevTick, setPrevTick] = useState(null);
+  const [lastDigit, setLastDigit] = useState(null);
+  const [digitHistory, setDigitHistory] = useState([]);
+  const [digitStats, setDigitStats] = useState(Array(10).fill(0));
+  const [evenOddRatio, setEvenOddRatio] = useState({
     even: 50,
     odd: 50,
   });
 
-  /* =========================
-     BOT STUDIO
-  ========================= */
+  const [strategy, setStrategy] = useState('DIGITDIFF');
+  const [stake, setStake] = useState('1.00');
+  const [duration, setDuration] = useState('1');
+  const [predictionDigit, setPredictionDigit] = useState('0');
+  const [takeProfit, setTakeProfit] = useState('10.00');
+  const [stopLoss, setStopLoss] = useState('20.00');
+  const [martingale, setMartingale] = useState('2.00');
+  const [maxConsecutiveLosses, setMaxConsecutiveLosses] =
+    useState('3');
 
-  const [strategy, setStrategy] =
-    useState('DIGITDIFF');
+  const [isBotRunning, setIsBotRunning] = useState(false);
+  const [simulationSignal, setSimulationSignal] =
+    useState('Waiting for bot start');
 
-  const [stake, setStake] =
-    useState('1.00');
+  const [simulatedTrades, setSimulatedTrades] = useState(0);
+  const [simulatedWins, setSimulatedWins] = useState(0);
+  const [simulatedLosses, setSimulatedLosses] = useState(0);
+  const [consecutiveLosses, setConsecutiveLosses] = useState(0);
 
-  const [duration, setDuration] =
-    useState('1');
+  const [botLogs, setBotLogs] = useState([]);
 
-  const [
-    predictionDigit,
-    setPredictionDigit,
-  ] = useState('0');
+  const [proposalLoading, setProposalLoading] = useState(false);
+  const [proposalError, setProposalError] = useState('');
+  const [proposalData, setProposalData] = useState(null);
 
-  const [takeProfit, setTakeProfit] =
-    useState('10.00');
-
-  const [stopLoss, setStopLoss] =
-    useState('20.00');
-
-  const [
-    martingale,
-    setMartingale,
-  ] = useState('2.00');
-
-  const [
-    maxConsecutiveLosses,
-    setMaxConsecutiveLosses,
-  ] = useState('3');
-
-  const [
-    isBotRunning,
-    setIsBotRunning,
-  ] = useState(false);
-
-  const [
-    simulationSignal,
-    setSimulationSignal,
-  ] = useState(
-    'Waiting for bot start'
-  );
-
-  const [
-    simulatedTrades,
-    setSimulatedTrades,
-  ] = useState(0);
-
-  const [
-    simulatedWins,
-    setSimulatedWins,
-  ] = useState(0);
-
-  const [
-    simulatedLosses,
-    setSimulatedLosses,
-  ] = useState(0);
-
-  const [
-    consecutiveLosses,
-    setConsecutiveLosses,
-  ] = useState(0);
-
-  const [botLogs, setBotLogs] =
-    useState([]);
-
-  /* =========================
-     PROPOSAL TESTING
-  ========================= */
-
-  const [
-    proposalLoading,
-    setProposalLoading,
-  ] = useState(false);
-
-  const [
-    proposalError,
-    setProposalError,
-  ] = useState('');
-
-  const [
-    proposalData,
-    setProposalData,
-  ] = useState(null);
-
-  /* =========================
-     REFS
-  ========================= */
-
-  const publicWsRef =
-    useRef(null);
-
-  const tradingWsRef =
-    useRef(null);
-
-  const publicSubscriptionRef =
-    useRef(null);
-
-  const publicPingRef =
-    useRef(null);
-
-  const tradingPingRef =
-    useRef(null);
-
-  const botRunningRef =
-    useRef(false);
-
-  const proposalReqIdRef =
-    useRef(1000);
+  const publicWsRef = useRef(null);
+  const tradingWsRef = useRef(null);
+  const publicSubscriptionRef = useRef(null);
+  const publicPingRef = useRef(null);
+  const tradingPingRef = useRef(null);
+  const botRunningRef = useRef(false);
 
   useEffect(() => {
-    botRunningRef.current =
-      isBotRunning;
+    botRunningRef.current = isBotRunning;
   }, [isBotRunning]);
 
-  /* =========================
-     LOG
-  ========================= */
+  const addBotLog = useCallback((message, type = 'info') => {
+    const time = new Date().toLocaleTimeString();
 
-  const addBotLog =
-    useCallback(
-      (
+    setBotLogs((previous) => [
+      {
+        time,
         message,
-        type = 'info'
-      ) => {
-        const time =
-          new Date().toLocaleTimeString();
-
-        setBotLogs(
-          (previous) => [
-            {
-              time,
-              message,
-              type,
-            },
-            ...previous.slice(
-              0,
-              79
-            ),
-          ]
-        );
+        type,
       },
-      []
-    );
+      ...previous.slice(0, 79),
+    ]);
+  }, []);
 
-  /* =========================
-     TRADING SOCKET
-  ========================= */
+  const connectTradingSocket = useCallback(
+    (wsUrl) => {
+      if (!wsUrl) {
+        setIsTradingConnected(false);
+        return;
+      }
 
-  const connectTradingSocket =
-    useCallback(
-      (wsUrl) => {
-        if (!wsUrl) {
-          setIsTradingConnected(
-            false
-          );
+      if (tradingWsRef.current) {
+        try {
+          tradingWsRef.current.onclose = null;
+          tradingWsRef.current.close();
+        } catch {}
+      }
 
-          return;
+      const ws = new WebSocket(wsUrl);
+      tradingWsRef.current = ws;
+
+      ws.onopen = () => {
+        setIsTradingConnected(true);
+
+        addBotLog(
+          'Authenticated Deriv trading socket connected.',
+          'system'
+        );
+
+        if (tradingPingRef.current) {
+          clearInterval(tradingPingRef.current);
         }
 
-        if (
-          tradingWsRef.current
-        ) {
-          try {
-            tradingWsRef.current
-              .onclose = null;
-
-            tradingWsRef.current.close();
-          } catch {}
-        }
-
-        const ws =
-          new WebSocket(wsUrl);
-
-        tradingWsRef.current =
-          ws;
-
-        ws.onopen = () => {
-          setIsTradingConnected(
-            true
-          );
-
-          addBotLog(
-            'Authenticated Deriv trading socket connected.',
-            'system'
-          );
-
-          if (
-            tradingPingRef.current
-          ) {
-            clearInterval(
-              tradingPingRef.current
+        tradingPingRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({
+                ping: 1,
+              })
             );
           }
+        }, 30000);
+      };
 
-          tradingPingRef.current =
-            setInterval(() => {
-              if (
-                ws.readyState ===
-                WebSocket.OPEN
-              ) {
-                ws.send(
-                  JSON.stringify({
-                    ping: 1,
-                  })
-                );
-              }
-            }, 30000);
-        };
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
 
-        ws.onmessage =
-          (event) => {
-            try {
-              const data =
-                JSON.parse(
-                  event.data
-                );
+          if (data.error) {
+            const message =
+              data.error.message ||
+              'Deriv rejected the request.';
 
-              if (data.error) {
-                console.error(
-                  'Trading WS error:',
-                  data.error
-                );
+            if (
+              data.msg_type === 'proposal' ||
+              data.echo_req?.proposal === 1
+            ) {
+              setProposalLoading(false);
+              setProposalError(message);
 
-                if (
-                  data.msg_type ===
-                    'proposal' ||
-                  data.echo_req
-                    ?.proposal ===
-                    1
-                ) {
-                  setProposalLoading(
-                    false
-                  );
-
-                  setProposalError(
-                    data.error
-                      .message ||
-                      'Proposal rejected.'
-                  );
-
-                  addBotLog(
-                    `Proposal rejected: ${
-                      data.error
-                        .message ||
-                      'Unknown error'
-                    }`,
-                    'error'
-                  );
-                }
-
-                return;
-              }
-
-              if (
-                data.msg_type ===
-                  'proposal' &&
-                data.proposal
-              ) {
-                setProposalLoading(
-                  false
-                );
-
-                setProposalError(
-                  ''
-                );
-
-                setProposalData(
-                  data.proposal
-                );
-
-                addBotLog(
-                  `Live proposal received. ID: ${data.proposal.id}`,
-                  'success'
-                );
-              }
-
-              if (
-                data.msg_type ===
-                  'balance' &&
-                data.balance
-              ) {
-                setBalance(
-                  data.balance
-                    .balance
-                );
-
-                setCurrency(
-                  data.balance
-                    .currency ||
-                    'USD'
-                );
-              }
-            } catch (error) {
-              console.error(
-                'Trading message parse error:',
-                error
+              addBotLog(
+                `Proposal rejected: ${message}`,
+                'error'
               );
             }
-          };
 
-        ws.onerror = () => {
-          setIsTradingConnected(
-            false
-          );
-
-          addBotLog(
-            'Authenticated trading socket error.',
-            'error'
-          );
-        };
-
-        ws.onclose = () => {
-          setIsTradingConnected(
-            false
-          );
-        };
-      },
-      [addBotLog]
-    );
-
-  /* =========================
-     SESSION
-  ========================= */
-
-  const loadDerivSession =
-    useCallback(async () => {
-      try {
-        setIsLoading(true);
-
-        const response =
-          await fetch(
-            '/api/auth/deriv/session',
-            {
-              method: 'GET',
-              credentials:
-                'include',
-              cache: 'no-store',
-            }
-          );
-
-        const data =
-          await response.json();
-
-        if (
-          !response.ok ||
-          !data.authenticated
-        ) {
-          setIsAuthorized(
-            false
-          );
-
-          setIsTradingConnected(
-            false
-          );
+            return;
+          }
 
           if (
-            response.status !==
-              401 &&
-            data.error
+            data.msg_type === 'proposal' &&
+            data.proposal
           ) {
-            setAuthError(
-              data.error
+            setProposalLoading(false);
+            setProposalError('');
+            setProposalData(data.proposal);
+
+            addBotLog(
+              `Live proposal received. ID: ${data.proposal.id}`,
+              'success'
             );
           }
 
-          return;
+          if (
+            data.msg_type === 'balance' &&
+            data.balance
+          ) {
+            setBalance(data.balance.balance);
+            setCurrency(data.balance.currency || 'USD');
+          }
+        } catch (error) {
+          console.error(
+            'Trading message parse error:',
+            error
+          );
+        }
+      };
+
+      ws.onerror = () => {
+        setIsTradingConnected(false);
+
+        addBotLog(
+          'Authenticated trading socket error.',
+          'error'
+        );
+      };
+
+      ws.onclose = () => {
+        setIsTradingConnected(false);
+      };
+    },
+    [addBotLog]
+  );
+
+  const loadDerivSession = useCallback(async () => {
+    try {
+      setIsLoading(true);
+
+      const response = await fetch(
+        '/api/auth/deriv/session',
+        {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store',
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.authenticated) {
+        setIsAuthorized(false);
+        setIsTradingConnected(false);
+
+        if (response.status !== 401 && data.error) {
+          setAuthError(data.error);
         }
 
-        if (!data.account) {
-          setIsAuthorized(
-            true
-          );
+        return;
+      }
 
-          setAuthError(
-            'Deriv authorization succeeded, but no Options trading account was found.'
-          );
-
-          return;
-        }
-
+      if (!data.account) {
         setIsAuthorized(true);
 
-        setAccountId(
-          data.account.id || ''
-        );
-
-        setBalance(
-          data.account.balance ??
-            null
-        );
-
-        setCurrency(
-          data.account.currency ||
-            'USD'
-        );
-
-        setAccountType(
-          data.account.type || ''
-        );
-
-        setAuthError('');
-
-        if (data.wsUrl) {
-          connectTradingSocket(
-            data.wsUrl
-          );
-        }
-      } catch (error) {
-        console.error(
-          'Session loading error:',
-          error
-        );
-
-        setIsAuthorized(
-          false
-        );
-
-        setIsTradingConnected(
-          false
-        );
-
         setAuthError(
-          'Unable to load your Deriv account.'
+          'Deriv authorization succeeded, but no Options trading account was found.'
         );
-      } finally {
-        setIsLoading(false);
+
+        return;
       }
-    }, [
-      connectTradingSocket,
-    ]);
+
+      setIsAuthorized(true);
+      setAccountId(data.account.id || '');
+      setBalance(data.account.balance ?? null);
+      setCurrency(data.account.currency || 'USD');
+      setAccountType(data.account.type || '');
+      setAuthError('');
+
+      if (data.wsUrl) {
+        connectTradingSocket(data.wsUrl);
+      }
+    } catch (error) {
+      console.error(
+        'Session loading error:',
+        error
+      );
+
+      setIsAuthorized(false);
+      setIsTradingConnected(false);
+
+      setAuthError(
+        'Unable to load your Deriv account.'
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }, [connectTradingSocket]);
 
   useEffect(() => {
-    const params =
-      new URLSearchParams(
-        window.location.search
-      );
+    const params = new URLSearchParams(
+      window.location.search
+    );
 
     const derivError =
-      params.get(
-        'deriv_error'
-      );
+      params.get('deriv_error');
 
     const derivConnected =
-      params.get(
-        'deriv_connected'
-      );
+      params.get('deriv_connected');
 
     if (derivError) {
-      setAuthError(
-        derivError
-      );
+      setAuthError(derivError);
     }
 
     if (
@@ -568,443 +292,325 @@ export default function BinarySpotPro() {
     loadDerivSession();
 
     return () => {
-      if (
-        tradingPingRef.current
-      ) {
-        clearInterval(
-          tradingPingRef.current
-        );
+      if (tradingPingRef.current) {
+        clearInterval(tradingPingRef.current);
       }
 
-      if (
-        tradingWsRef.current
-      ) {
-        tradingWsRef.current
-          .onclose = null;
-
+      if (tradingWsRef.current) {
+        tradingWsRef.current.onclose = null;
         tradingWsRef.current.close();
       }
     };
   }, [loadDerivSession]);
 
-  /* =========================
-     DIGIT STATS
-  ========================= */
+  const updateDigitStats = useCallback((digit) => {
+    setDigitHistory((previous) => {
+      const updated = [
+        digit,
+        ...previous,
+      ].slice(0, 100);
 
-  const updateDigitStats =
-    useCallback((digit) => {
-      setDigitHistory(
-        (previous) => {
-          const updated = [
-            digit,
-            ...previous,
-          ].slice(0, 100);
+      const counts = Array(10).fill(0);
+      let evenCount = 0;
 
-          const counts =
-            Array(10).fill(0);
+      updated.forEach((item) => {
+        counts[item] += 1;
 
-          let evenCount = 0;
-
-          updated.forEach(
-            (item) => {
-              counts[item] += 1;
-
-              if (
-                item % 2 === 0
-              ) {
-                evenCount += 1;
-              }
-            }
-          );
-
-          const total =
-            updated.length || 1;
-
-          setDigitStats(
-            counts.map(
-              (count) =>
-                Math.round(
-                  (count /
-                    total) *
-                    100
-                )
-            )
-          );
-
-          setEvenOddRatio({
-            even:
-              Math.round(
-                (evenCount /
-                  total) *
-                  100
-              ),
-
-            odd:
-              Math.round(
-                ((total -
-                  evenCount) /
-                  total) *
-                  100
-              ),
-          });
-
-          return updated;
+        if (item % 2 === 0) {
+          evenCount += 1;
         }
-      );
-    }, []);
+      });
 
-  /* =========================
-     SIMULATION
-  ========================= */
+      const total = updated.length || 1;
 
-  const evaluateBotTick =
-    useCallback(
-      (digit) => {
-        if (
-          !botRunningRef.current
-        ) {
-          return;
-        }
-
-        const prediction =
-          Number(
-            predictionDigit
-          );
-
-        let wouldWin = false;
-
-        if (
-          strategy ===
-          'DIGITDIFF'
-        ) {
-          wouldWin =
-            digit !== prediction;
-        }
-
-        if (
-          strategy ===
-          'DIGITMATCH'
-        ) {
-          wouldWin =
-            digit === prediction;
-        }
-
-        if (
-          strategy ===
-          'DIGITEVEN'
-        ) {
-          wouldWin =
-            digit % 2 === 0;
-        }
-
-        if (
-          strategy ===
-          'DIGITODD'
-        ) {
-          wouldWin =
-            digit % 2 !== 0;
-        }
-
-        if (
-          strategy ===
-          'DIGITOVER'
-        ) {
-          wouldWin =
-            digit > prediction;
-        }
-
-        if (
-          strategy ===
-          'DIGITUNDER'
-        ) {
-          wouldWin =
-            digit < prediction;
-        }
-
-        setSimulatedTrades(
-          (value) =>
-            value + 1
-        );
-
-        if (wouldWin) {
-          setSimulatedWins(
-            (value) =>
-              value + 1
-          );
-
-          setConsecutiveLosses(
-            0
-          );
-
-          setSimulationSignal(
-            `SIMULATED WIN — digit ${digit}`
-          );
-
-          addBotLog(
-            `Simulation WIN | ${strategy} | Digit ${digit}`,
-            'success'
-          );
-        } else {
-          setSimulatedLosses(
-            (value) =>
-              value + 1
-          );
-
-          setConsecutiveLosses(
-            (previous) => {
-              const next =
-                previous + 1;
-
-              if (
-                next >=
-                Number(
-                  maxConsecutiveLosses
-                )
-              ) {
-                setIsBotRunning(
-                  false
-                );
-
-                setSimulationSignal(
-                  'Bot stopped by loss limit'
-                );
-
-                addBotLog(
-                  `Circuit breaker activated after ${next} consecutive simulated losses.`,
-                  'error'
-                );
-              }
-
-              return next;
-            }
-          );
-
-          setSimulationSignal(
-            `SIMULATED LOSS — digit ${digit}`
-          );
-
-          addBotLog(
-            `Simulation LOSS | ${strategy} | Digit ${digit}`,
-            'error'
-          );
-        }
-      },
-      [
-        strategy,
-        predictionDigit,
-        maxConsecutiveLosses,
-        addBotLog,
-      ]
-    );
-
-  /* =========================
-     PUBLIC MARKET SOCKET
-  ========================= */
-
-  const connectMarket =
-    useCallback(() => {
-      if (
-        publicWsRef.current &&
-        (
-          publicWsRef.current
-            .readyState ===
-            WebSocket.OPEN ||
-          publicWsRef.current
-            .readyState ===
-            WebSocket.CONNECTING
+      setDigitStats(
+        counts.map((count) =>
+          Math.round(
+            (count / total) * 100
+          )
         )
-      ) {
+      );
+
+      setEvenOddRatio({
+        even: Math.round(
+          (evenCount / total) * 100
+        ),
+        odd: Math.round(
+          ((total - evenCount) / total) * 100
+        ),
+      });
+
+      return updated;
+    });
+  }, []);
+
+  const evaluateBotTick = useCallback(
+    (digit) => {
+      if (!botRunningRef.current) {
         return;
       }
 
-      const ws =
-        new WebSocket(
-          PUBLIC_WS_URL
+      const prediction = Number(
+        predictionDigit
+      );
+
+      let wouldWin = false;
+
+      if (strategy === 'DIGITDIFF') {
+        wouldWin =
+          digit !== prediction;
+      }
+
+      if (strategy === 'DIGITMATCH') {
+        wouldWin =
+          digit === prediction;
+      }
+
+      if (strategy === 'DIGITEVEN') {
+        wouldWin =
+          digit % 2 === 0;
+      }
+
+      if (strategy === 'DIGITODD') {
+        wouldWin =
+          digit % 2 !== 0;
+      }
+
+      if (strategy === 'DIGITOVER') {
+        wouldWin =
+          digit > prediction;
+      }
+
+      if (strategy === 'DIGITUNDER') {
+        wouldWin =
+          digit < prediction;
+      }
+
+      setSimulatedTrades(
+        (value) => value + 1
+      );
+
+      if (wouldWin) {
+        setSimulatedWins(
+          (value) => value + 1
         );
 
-      publicWsRef.current =
-        ws;
+        setConsecutiveLosses(0);
 
-      ws.onopen = () => {
-        setIsMarketConnected(
-          true
+        setSimulationSignal(
+          `SIMULATED WIN — digit ${digit}`
         );
 
-        ws.send(
-          JSON.stringify({
-            ticks: symbol,
-            subscribe: 1,
-          })
+        addBotLog(
+          `Simulation WIN | ${strategy} | Digit ${digit}`,
+          'success'
+        );
+      } else {
+        setSimulatedLosses(
+          (value) => value + 1
         );
 
-        if (
-          publicPingRef.current
-        ) {
-          clearInterval(
-            publicPingRef.current
-          );
-        }
+        setConsecutiveLosses(
+          (previous) => {
+            const next =
+              previous + 1;
 
-        publicPingRef.current =
-          setInterval(() => {
             if (
-              ws.readyState ===
-              WebSocket.OPEN
+              next >=
+              Number(
+                maxConsecutiveLosses
+              )
             ) {
-              ws.send(
-                JSON.stringify({
-                  ping: 1,
-                })
+              setIsBotRunning(false);
+
+              setSimulationSignal(
+                'Bot stopped by loss limit'
+              );
+
+              addBotLog(
+                `Circuit breaker activated after ${next} consecutive simulated losses.`,
+                'error'
               );
             }
-          }, 30000);
-      };
 
-      ws.onmessage =
-        (event) => {
-          try {
-            const data =
-              JSON.parse(
-                event.data
-              );
+            return next;
+          }
+        );
 
-            if (data.error) {
-              console.error(
-                'Public WS error:',
-                data.error
-              );
+        setSimulationSignal(
+          `SIMULATED LOSS — digit ${digit}`
+        );
 
-              return;
-            }
+        addBotLog(
+          `Simulation LOSS | ${strategy} | Digit ${digit}`,
+          'error'
+        );
+      }
+    },
+    [
+      strategy,
+      predictionDigit,
+      maxConsecutiveLosses,
+      addBotLog,
+    ]
+  );
 
-            if (
-              data.msg_type ===
-                'tick' &&
-              data.tick
-            ) {
-              if (
-                data.subscription
-                  ?.id
-              ) {
-                publicSubscriptionRef.current =
-                  data
-                    .subscription
-                    .id;
-              }
+  const connectMarket = useCallback(() => {
+    if (
+      publicWsRef.current &&
+      (
+        publicWsRef.current.readyState ===
+          WebSocket.OPEN ||
+        publicWsRef.current.readyState ===
+          WebSocket.CONNECTING
+      )
+    ) {
+      return;
+    }
 
-              const quote =
-                Number(
-                  data.tick
-                    .quote
-                );
+    const ws =
+      new WebSocket(
+        PUBLIC_WS_URL
+      );
 
-              setLastTick(
-                (previous) => {
-                  setPrevTick(
-                    previous
-                  );
+    publicWsRef.current = ws;
 
-                  return quote;
-                }
-              );
+    ws.onopen = () => {
+      setIsMarketConnected(true);
 
-              const quoteText =
-                String(
-                  data.tick
-                    .quote
-                );
+      ws.send(
+        JSON.stringify({
+          ticks: symbol,
+          subscribe: 1,
+        })
+      );
 
-              const numericOnly =
-                quoteText.replace(
-                  /\D/g,
-                  ''
-                );
+      if (publicPingRef.current) {
+        clearInterval(publicPingRef.current);
+      }
 
-              if (
-                numericOnly.length
-              ) {
-                const digit =
-                  Number(
-                    numericOnly[
-                      numericOnly
-                        .length -
-                        1
-                    ]
-                  );
-
-                setLastDigit(
-                  digit
-                );
-
-                updateDigitStats(
-                  digit
-                );
-
-                evaluateBotTick(
-                  digit
-                );
-              }
-            }
-          } catch (error) {
-            console.error(
-              'Tick parsing error:',
-              error
+      publicPingRef.current =
+        setInterval(() => {
+          if (
+            ws.readyState ===
+            WebSocket.OPEN
+          ) {
+            ws.send(
+              JSON.stringify({
+                ping: 1,
+              })
             );
           }
-        };
+        }, 30000);
+    };
 
-      ws.onerror = () => {
-        setIsMarketConnected(
-          false
-        );
-      };
+    ws.onmessage = (event) => {
+      try {
+        const data =
+          JSON.parse(event.data);
 
-      ws.onclose = () => {
-        setIsMarketConnected(
-          false
+        if (data.error) {
+          console.error(
+            'Public WS error:',
+            data.error
+          );
+
+          return;
+        }
+
+        if (
+          data.msg_type === 'tick' &&
+          data.tick
+        ) {
+          if (
+            data.subscription?.id
+          ) {
+            publicSubscriptionRef.current =
+              data.subscription.id;
+          }
+
+          const quote =
+            Number(
+              data.tick.quote
+            );
+
+          setLastTick((previous) => {
+            setPrevTick(previous);
+            return quote;
+          });
+
+          const quoteText =
+            String(
+              data.tick.quote
+            );
+
+          const numericOnly =
+            quoteText.replace(
+              /\D/g,
+              ''
+            );
+
+          if (numericOnly.length) {
+            const digit =
+              Number(
+                numericOnly[
+                  numericOnly.length - 1
+                ]
+              );
+
+            setLastDigit(digit);
+
+            updateDigitStats(
+              digit
+            );
+
+            evaluateBotTick(
+              digit
+            );
+          }
+        }
+      } catch (error) {
+        console.error(
+          'Tick parsing error:',
+          error
         );
-      };
-    }, [
-      symbol,
-      updateDigitStats,
-      evaluateBotTick,
-    ]);
+      }
+    };
+
+    ws.onerror = () => {
+      setIsMarketConnected(false);
+    };
+
+    ws.onclose = () => {
+      setIsMarketConnected(false);
+    };
+  }, [
+    symbol,
+    updateDigitStats,
+    evaluateBotTick,
+  ]);
 
   useEffect(() => {
     connectMarket();
 
     return () => {
-      if (
-        publicPingRef.current
-      ) {
-        clearInterval(
-          publicPingRef.current
-        );
+      if (publicPingRef.current) {
+        clearInterval(publicPingRef.current);
       }
 
-      if (
-        publicWsRef.current
-      ) {
-        publicWsRef.current
-          .onclose = null;
-
+      if (publicWsRef.current) {
+        publicWsRef.current.onclose = null;
         publicWsRef.current.close();
       }
     };
   }, [connectMarket]);
 
-  /* =========================
-     SYMBOL CHANGE
-  ========================= */
-
   useEffect(() => {
-    const ws =
-      publicWsRef.current;
+    const ws = publicWsRef.current;
 
     if (
       !ws ||
-      ws.readyState !==
-        WebSocket.OPEN
+      ws.readyState !== WebSocket.OPEN
     ) {
       return;
     }
@@ -1024,7 +630,6 @@ export default function BinarySpotPro() {
     }
 
     setDigitHistory([]);
-
     setDigitStats(
       Array(10).fill(0)
     );
@@ -1045,166 +650,144 @@ export default function BinarySpotPro() {
     );
   }, [symbol]);
 
-  /* =========================
-     OAUTH
-  ========================= */
+  const connectDeriv = async () => {
+    try {
+      setAuthError('');
+      setIsConnecting(true);
 
-  const connectDeriv =
-    async () => {
-      try {
-        setAuthError('');
-        setIsConnecting(true);
+      const characters =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
 
-        const characters =
-          'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+      const verifierBytes =
+        new Uint8Array(64);
 
-        const verifierBytes =
-          new Uint8Array(64);
+      crypto.getRandomValues(
+        verifierBytes
+      );
 
-        crypto.getRandomValues(
+      const codeVerifier =
+        Array.from(
           verifierBytes
-        );
-
-        const codeVerifier =
-          Array.from(
-            verifierBytes
+        )
+          .map(
+            (byte) =>
+              characters[
+                byte %
+                  characters.length
+              ]
           )
-            .map(
-              (byte) =>
-                characters[
-                  byte %
-                    characters.length
-                ]
-            )
-            .join('');
+          .join('');
 
-        const verifierData =
-          new TextEncoder().encode(
-            codeVerifier
-          );
-
-        const digest =
-          await crypto.subtle.digest(
-            'SHA-256',
-            verifierData
-          );
-
-        const codeChallenge =
-          btoa(
-            String.fromCharCode(
-              ...new Uint8Array(
-                digest
-              )
-            )
-          )
-            .replace(
-              /\+/g,
-              '-'
-            )
-            .replace(
-              /\//g,
-              '_'
-            )
-            .replace(
-              /=+$/,
-              ''
-            );
-
-        const stateBytes =
-          new Uint8Array(16);
-
-        crypto.getRandomValues(
-          stateBytes
-        );
-
-        const state =
-          Array.from(
-            stateBytes
-          )
-            .map((byte) =>
-              byte
-                .toString(16)
-                .padStart(2, '0')
-            )
-            .join('');
-
-        sessionStorage.setItem(
-          'deriv_pkce_verifier',
+      const verifierData =
+        new TextEncoder().encode(
           codeVerifier
         );
 
-        sessionStorage.setItem(
-          'deriv_oauth_state',
-          state
+      const digest =
+        await crypto.subtle.digest(
+          'SHA-256',
+          verifierData
         );
 
-        const authUrl =
-          new URL(
-            'https://auth.deriv.com/oauth2/auth'
-          );
+      const codeChallenge =
+        btoa(
+          String.fromCharCode(
+            ...new Uint8Array(
+              digest
+            )
+          )
+        )
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/, '');
 
-        authUrl.searchParams.set(
-          'response_type',
-          'code'
+      const stateBytes =
+        new Uint8Array(16);
+
+      crypto.getRandomValues(
+        stateBytes
+      );
+
+      const state =
+        Array.from(
+          stateBytes
+        )
+          .map((byte) =>
+            byte
+              .toString(16)
+              .padStart(2, '0')
+          )
+          .join('');
+
+      sessionStorage.setItem(
+        'deriv_pkce_verifier',
+        codeVerifier
+      );
+
+      sessionStorage.setItem(
+        'deriv_oauth_state',
+        state
+      );
+
+      const authUrl =
+        new URL(
+          'https://auth.deriv.com/oauth2/auth'
         );
 
-        authUrl.searchParams.set(
-          'client_id',
-          CLIENT_ID
-        );
+      authUrl.searchParams.set(
+        'response_type',
+        'code'
+      );
 
-        authUrl.searchParams.set(
-          'redirect_uri',
-          REDIRECT_URI
-        );
+      authUrl.searchParams.set(
+        'client_id',
+        CLIENT_ID
+      );
 
-        authUrl.searchParams.set(
-          'scope',
-          'trade account_manage'
-        );
+      authUrl.searchParams.set(
+        'redirect_uri',
+        REDIRECT_URI
+      );
 
-        authUrl.searchParams.set(
-          'state',
-          state
-        );
+      authUrl.searchParams.set(
+        'scope',
+        'trade account_manage'
+      );
 
-        authUrl.searchParams.set(
-          'code_challenge',
-          codeChallenge
-        );
+      authUrl.searchParams.set(
+        'state',
+        state
+      );
 
-        authUrl.searchParams.set(
-          'code_challenge_method',
-          'S256'
-        );
+      authUrl.searchParams.set(
+        'code_challenge',
+        codeChallenge
+      );
 
-        window.location.assign(
-          authUrl.toString()
-        );
-      } catch (error) {
-        console.error(
-          'Unable to start Deriv OAuth:',
-          error
-        );
+      authUrl.searchParams.set(
+        'code_challenge_method',
+        'S256'
+      );
 
-        setIsConnecting(
-          false
-        );
+      window.location.assign(
+        authUrl.toString()
+      );
+    } catch (error) {
+      console.error(
+        'Unable to start Deriv OAuth:',
+        error
+      );
 
-        setAuthError(
-          'Unable to open Deriv authorization.'
-        );
-      }
-    };
+      setIsConnecting(false);
 
-  /* =========================
-     BOT CONTROLS
-  ========================= */
+      setAuthError(
+        'Unable to open Deriv authorization.'
+      );
+    }
+  };
 
   const startBot = () => {
-    if (
-      !isMarketConnected
-    ) {
+    if (!isMarketConnected) {
       addBotLog(
         'Cannot start: market feed is offline.',
         'error'
@@ -1254,175 +837,160 @@ export default function BinarySpotPro() {
     );
 
     setBotLogs([]);
-
     setProposalData(null);
     setProposalError('');
   };
 
-  /* =========================
-     PROPOSAL REQUEST
-  ========================= */
+  const requestLiveProposal = () => {
+    setProposalError('');
+    setProposalData(null);
 
-  const requestLiveProposal =
-    () => {
-      setProposalError('');
-      setProposalData(null);
+    if (!isAuthorized) {
+      setProposalError(
+        'Connect your Deriv account first.'
+      );
 
-      if (!isAuthorized) {
-        setProposalError(
-          'Connect your Deriv account first.'
-        );
+      return;
+    }
 
-        return;
-      }
+    const ws =
+      tradingWsRef.current;
 
-      const ws =
-        tradingWsRef.current;
+    if (
+      !ws ||
+      ws.readyState !== WebSocket.OPEN
+    ) {
+      setProposalError(
+        'Authenticated trading connection is not ready.'
+      );
 
-      if (
-        !ws ||
-        ws.readyState !==
-          WebSocket.OPEN
-      ) {
-        setProposalError(
-          'Authenticated trading connection is not ready.'
-        );
+      addBotLog(
+        'Proposal blocked: trading socket is offline.',
+        'error'
+      );
 
-        addBotLog(
-          'Proposal blocked: trading socket is offline.',
-          'error'
-        );
+      return;
+    }
 
-        return;
-      }
+    const parsedStake =
+      Number(stake);
 
-      const parsedStake =
-        Number(stake);
+    const parsedDuration =
+      Number(duration);
 
-      const parsedDuration =
-        Number(duration);
+    const parsedPrediction =
+      Number(
+        predictionDigit
+      );
 
-      const parsedPrediction =
-        Number(
-          predictionDigit
-        );
+    if (
+      !Number.isFinite(
+        parsedStake
+      ) ||
+      parsedStake <= 0
+    ) {
+      setProposalError(
+        'Enter a valid stake.'
+      );
 
-      if (
-        !Number.isFinite(
-          parsedStake
-        ) ||
-        parsedStake <= 0
-      ) {
-        setProposalError(
-          'Enter a valid stake.'
-        );
+      return;
+    }
 
-        return;
-      }
+    if (
+      !Number.isInteger(
+        parsedDuration
+      ) ||
+      parsedDuration < 1
+    ) {
+      setProposalError(
+        'Duration must be at least 1 tick.'
+      );
 
-      if (
+      return;
+    }
+
+    if (
+      [
+        'DIGITDIFF',
+        'DIGITMATCH',
+        'DIGITOVER',
+        'DIGITUNDER',
+      ].includes(strategy) &&
+      (
         !Number.isInteger(
-          parsedDuration
+          parsedPrediction
         ) ||
-        parsedDuration < 1
-      ) {
-        setProposalError(
-          'Duration must be at least 1 tick.'
-        );
+        parsedPrediction < 0 ||
+        parsedPrediction > 9
+      )
+    ) {
+      setProposalError(
+        'Prediction digit must be between 0 and 9.'
+      );
 
-        return;
-      }
+      return;
+    }
 
-      if (
-        [
-          'DIGITDIFF',
-          'DIGITMATCH',
-          'DIGITOVER',
-          'DIGITUNDER',
-        ].includes(strategy) &&
-        (
-          !Number.isInteger(
-            parsedPrediction
-          ) ||
-          parsedPrediction < 0 ||
-          parsedPrediction > 9
-        )
-      ) {
-        setProposalError(
-          'Prediction digit must be between 0 and 9.'
-        );
+    const payload = {
+      proposal: 1,
+      amount: parsedStake,
+      basis: 'stake',
+      contract_type: strategy,
+      currency:
+        currency || 'USD',
+      duration:
+        parsedDuration,
+      duration_unit: 't',
 
-        return;
-      }
-
-      const reqId =
-        ++proposalReqIdRef.current;
-
-      const payload = {
-        proposal: 1,
-        amount: parsedStake,
-        basis: 'stake',
-        contract_type:
-          strategy,
-        currency:
-          currency || 'USD',
-        duration:
-          parsedDuration,
-        duration_unit: 't',
+      // New Deriv Options API field:
+      underlying_symbol:
         symbol,
-        req_id: reqId,
-      };
 
-      if (
-        [
-          'DIGITDIFF',
-          'DIGITMATCH',
-          'DIGITOVER',
-          'DIGITUNDER',
-        ].includes(strategy)
-      ) {
-        payload.barrier =
-          String(
-            parsedPrediction
-          );
-      }
-
-      try {
-        setProposalLoading(
-          true
-        );
-
-        addBotLog(
-          `Requesting live ${strategy} proposal for ${symbol} at ${currency} ${parsedStake.toFixed(
-            2
-          )}.`,
-          'system'
-        );
-
-        ws.send(
-          JSON.stringify(
-            payload
-          )
-        );
-      } catch (error) {
-        console.error(
-          'Proposal request error:',
-          error
-        );
-
-        setProposalLoading(
-          false
-        );
-
-        setProposalError(
-          'Unable to send proposal request.'
-        );
-      }
+      subscribe: 1,
     };
 
-  /* =========================
-     DERIVED VALUES
-  ========================= */
+    if (
+      [
+        'DIGITDIFF',
+        'DIGITMATCH',
+        'DIGITOVER',
+        'DIGITUNDER',
+      ].includes(strategy)
+    ) {
+      payload.barrier =
+        String(
+          parsedPrediction
+        );
+    }
+
+    try {
+      setProposalLoading(true);
+
+      addBotLog(
+        `Requesting live ${strategy} proposal for ${symbol} at ${currency} ${parsedStake.toFixed(
+          2
+        )}.`,
+        'system'
+      );
+
+      ws.send(
+        JSON.stringify(
+          payload
+        )
+      );
+    } catch (error) {
+      console.error(
+        'Proposal request error:',
+        error
+      );
+
+      setProposalLoading(false);
+
+      setProposalError(
+        'Unable to send proposal request.'
+      );
+    }
+  };
 
   const formattedQuote =
     lastTick !== null
@@ -1452,23 +1020,12 @@ export default function BinarySpotPro() {
       'DIGITUNDER',
     ].includes(strategy);
 
-  /* =========================
-     UI
-  ========================= */
-
   return (
     <main className="min-h-screen bg-[#080b11] text-slate-100">
-
-      {/* LIVE BAR */}
-
       <div className="border-b border-slate-800 bg-[#0e131d] px-4 py-2.5">
-
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
-
           <div className="flex items-center gap-4">
-
             <div className="flex items-center gap-2">
-
               <span
                 className={`h-2.5 w-2.5 rounded-full ${
                   isMarketConnected
@@ -1482,12 +1039,10 @@ export default function BinarySpotPro() {
                   ? 'Market Feed Active'
                   : 'Market Feed Offline'}
               </span>
-
             </div>
 
             {isAuthorized && (
               <div className="flex items-center gap-2">
-
                 <span
                   className={`h-2.5 w-2.5 rounded-full ${
                     isTradingConnected
@@ -1501,14 +1056,11 @@ export default function BinarySpotPro() {
                     ? 'Trading Socket Active'
                     : 'Trading Socket Offline'}
                 </span>
-
               </div>
             )}
-
           </div>
 
           <div className="flex items-center gap-4 font-mono">
-
             <span className="text-slate-500">
               {symbol}
             </span>
@@ -1517,8 +1069,7 @@ export default function BinarySpotPro() {
               className={`font-black ${
                 lastTick !== null &&
                 prevTick !== null &&
-                lastTick >=
-                  prevTick
+                lastTick >= prevTick
                   ? 'text-emerald-400'
                   : 'text-rose-400'
               }`}
@@ -1531,27 +1082,18 @@ export default function BinarySpotPro() {
                 ? lastDigit
                 : '-'}
             </span>
-
           </div>
-
         </div>
-
       </div>
 
-      {/* HEADER */}
-
       <header className="border-b border-slate-800 bg-[#0d121c]">
-
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 min-h-16 py-3 flex items-center justify-between gap-3">
-
           <div className="flex items-center gap-3">
-
             <div className="h-10 w-10 bg-gradient-to-tr from-emerald-500 to-teal-400 rounded-xl flex items-center justify-center font-black text-black text-xl shadow-lg">
               BS
             </div>
 
             <div>
-
               <div className="text-lg font-black tracking-tight text-white">
                 BINARY
                 <span className="text-emerald-400">
@@ -1563,9 +1105,7 @@ export default function BinarySpotPro() {
               <div className="text-[9px] uppercase font-bold tracking-widest text-emerald-500">
                 Algorithmic Hub
               </div>
-
             </div>
-
           </div>
 
           {!isAuthorized ? (
@@ -1586,7 +1126,6 @@ export default function BinarySpotPro() {
             </button>
           ) : (
             <div className="bg-[#131926] border border-slate-700 px-3 py-2 rounded-xl text-right">
-
               <p className="text-[9px] uppercase tracking-wider text-slate-500">
                 {accountType ||
                   'Options Account'}
@@ -1611,20 +1150,13 @@ export default function BinarySpotPro() {
                     )}`
                   : 'Connected'}
               </p>
-
             </div>
           )}
-
         </div>
-
       </header>
 
-      {/* NAV */}
-
       <div className="border-b border-slate-800 bg-[#0b1019]">
-
         <div className="max-w-7xl mx-auto px-4 py-2 flex gap-2 overflow-x-auto">
-
           {[
             {
               id: 'overview',
@@ -1658,37 +1190,24 @@ export default function BinarySpotPro() {
               {tab.label}
             </button>
           ))}
-
         </div>
-
       </div>
 
-      {/* CONTENT */}
-
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-
         {authError && (
           <div className="mb-6 rounded-xl border border-rose-800 bg-rose-950/40 p-4 text-sm text-rose-300">
             ⚠️ {authError}
           </div>
         )}
 
-        {/* OVERVIEW */}
-
         {activeTab ===
           'overview' && (
           <div className="space-y-8">
-
             <div className="rounded-3xl border border-slate-800 bg-gradient-to-br from-[#121824] via-[#0d121c] to-[#080b11] p-8 md:p-12 shadow-2xl">
-
               <div className="max-w-2xl space-y-5">
-
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold">
-
                   <span className="h-2 w-2 rounded-full bg-emerald-400" />
-
                   BinarySpot Pro Trading Platform
-
                 </div>
 
                 <h1 className="text-4xl sm:text-5xl font-black text-white tracking-tight leading-tight">
@@ -1710,82 +1229,16 @@ export default function BinarySpotPro() {
                 >
                   Open Bot Studio
                 </button>
-
               </div>
-
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-
-              <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5">
-
-                <p className="text-[10px] uppercase font-black text-slate-500">
-                  OAuth
-                </p>
-
-                <p className={`mt-2 font-black ${
-                  isAuthorized
-                    ? 'text-emerald-400'
-                    : 'text-rose-400'
-                }`}>
-                  {isAuthorized
-                    ? 'Connected'
-                    : 'Offline'}
-                </p>
-
-              </div>
-
-              <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5">
-
-                <p className="text-[10px] uppercase font-black text-slate-500">
-                  Market Feed
-                </p>
-
-                <p className={`mt-2 font-black ${
-                  isMarketConnected
-                    ? 'text-emerald-400'
-                    : 'text-rose-400'
-                }`}>
-                  {isMarketConnected
-                    ? 'Connected'
-                    : 'Offline'}
-                </p>
-
-              </div>
-
-              <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5">
-
-                <p className="text-[10px] uppercase font-black text-slate-500">
-                  Trading Socket
-                </p>
-
-                <p className={`mt-2 font-black ${
-                  isTradingConnected
-                    ? 'text-cyan-400'
-                    : 'text-amber-400'
-                }`}>
-                  {isTradingConnected
-                    ? 'Authenticated'
-                    : 'Offline'}
-                </p>
-
-              </div>
-
-            </div>
-
           </div>
         )}
-
-        {/* BOT STUDIO */}
 
         {activeTab ===
           'bots' && (
           <div className="space-y-6">
-
             <div className="flex flex-wrap justify-between items-center gap-4">
-
               <div>
-
                 <h2 className="text-xl font-black text-white">
                   Bot Studio
                 </h2>
@@ -1793,7 +1246,6 @@ export default function BinarySpotPro() {
                 <p className="text-xs text-slate-400 mt-1">
                   Live strategy testing and Deriv price proposal validation.
                 </p>
-
               </div>
 
               <span
@@ -1807,29 +1259,22 @@ export default function BinarySpotPro() {
                   ? 'Simulation Active'
                   : 'Standby'}
               </span>
-
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
               <div className="lg:col-span-2 bg-[#0f1522] border border-slate-800 rounded-2xl p-6 space-y-6">
-
                 <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4">
-
                   <p className="text-xs font-black uppercase tracking-wider text-cyan-400">
                     Proposal Test Mode
                   </p>
 
                   <p className="mt-1 text-xs text-slate-400">
-                    BinarySpot Pro can now request a real Deriv contract quote. No purchase is sent.
+                    BinarySpot Pro can request a real Deriv contract quote. No purchase is sent.
                   </p>
-
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-
                   <div>
-
                     <label className="text-xs font-bold text-slate-400">
                       Synthetic Asset
                     </label>
@@ -1838,13 +1283,10 @@ export default function BinarySpotPro() {
                       value={symbol}
                       onChange={(event) =>
                         setSymbol(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
-                      disabled={
-                        isBotRunning
-                      }
+                      disabled={isBotRunning}
                       className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm"
                     >
                       <option value="R_100">
@@ -1863,11 +1305,9 @@ export default function BinarySpotPro() {
                         Volatility 100 (1s)
                       </option>
                     </select>
-
                   </div>
 
                   <div>
-
                     <label className="text-xs font-bold text-slate-400">
                       Strategy
                     </label>
@@ -1876,8 +1316,7 @@ export default function BinarySpotPro() {
                       value={strategy}
                       onChange={(event) => {
                         setStrategy(
-                          event.target
-                            .value
+                          event.target.value
                         );
 
                         setProposalData(
@@ -1888,9 +1327,7 @@ export default function BinarySpotPro() {
                           ''
                         );
                       }}
-                      disabled={
-                        isBotRunning
-                      }
+                      disabled={isBotRunning}
                       className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm"
                     >
                       <option value="DIGITDIFF">
@@ -1917,11 +1354,9 @@ export default function BinarySpotPro() {
                         Digit Under
                       </option>
                     </select>
-
                   </div>
 
                   <div>
-
                     <label className="text-xs font-bold text-slate-400">
                       Stake
                     </label>
@@ -1933,20 +1368,15 @@ export default function BinarySpotPro() {
                       value={stake}
                       onChange={(event) =>
                         setStake(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
-                      disabled={
-                        isBotRunning
-                      }
+                      disabled={isBotRunning}
                       className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm font-mono"
                     />
-
                   </div>
 
                   <div>
-
                     <label className="text-xs font-bold text-slate-400">
                       Duration (Ticks)
                     </label>
@@ -1958,21 +1388,16 @@ export default function BinarySpotPro() {
                       value={duration}
                       onChange={(event) =>
                         setDuration(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
-                      disabled={
-                        isBotRunning
-                      }
+                      disabled={isBotRunning}
                       className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm font-mono"
                     />
-
                   </div>
 
                   {needsPredictionDigit && (
                     <div>
-
                       <label className="text-xs font-bold text-cyan-400">
                         Prediction Digit
                       </label>
@@ -1981,26 +1406,19 @@ export default function BinarySpotPro() {
                         type="number"
                         min="0"
                         max="9"
-                        value={
-                          predictionDigit
-                        }
+                        value={predictionDigit}
                         onChange={(event) =>
                           setPredictionDigit(
-                            event.target
-                              .value
+                            event.target.value
                           )
                         }
-                        disabled={
-                          isBotRunning
-                        }
+                        disabled={isBotRunning}
                         className="w-full mt-2 bg-[#151d2d] border border-cyan-900 p-3 rounded-xl text-sm font-mono text-cyan-300"
                       />
-
                     </div>
                   )}
 
                   <div>
-
                     <label className="text-xs font-bold text-slate-400">
                       Martingale Multiplier
                     </label>
@@ -2012,45 +1430,33 @@ export default function BinarySpotPro() {
                       value={martingale}
                       onChange={(event) =>
                         setMartingale(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
-                      disabled={
-                        isBotRunning
-                      }
+                      disabled={isBotRunning}
                       className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm font-mono"
                     />
-
                   </div>
 
                   <div>
-
                     <label className="text-xs font-bold text-emerald-400">
                       Take Profit
                     </label>
 
                     <input
                       type="number"
-                      value={
-                        takeProfit
-                      }
+                      value={takeProfit}
                       onChange={(event) =>
                         setTakeProfit(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
-                      disabled={
-                        isBotRunning
-                      }
+                      disabled={isBotRunning}
                       className="w-full mt-2 bg-[#151d2d] border border-emerald-900 p-3 rounded-xl text-sm font-mono text-emerald-300"
                     />
-
                   </div>
 
                   <div>
-
                     <label className="text-xs font-bold text-rose-400">
                       Stop Loss
                     </label>
@@ -2060,20 +1466,15 @@ export default function BinarySpotPro() {
                       value={stopLoss}
                       onChange={(event) =>
                         setStopLoss(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
-                      disabled={
-                        isBotRunning
-                      }
+                      disabled={isBotRunning}
                       className="w-full mt-2 bg-[#151d2d] border border-rose-900 p-3 rounded-xl text-sm font-mono text-rose-300"
                     />
-
                   </div>
 
                   <div>
-
                     <label className="text-xs font-bold text-rose-400">
                       Max Consecutive Losses
                     </label>
@@ -2082,27 +1483,19 @@ export default function BinarySpotPro() {
                       type="number"
                       min="1"
                       max="20"
-                      value={
-                        maxConsecutiveLosses
-                      }
+                      value={maxConsecutiveLosses}
                       onChange={(event) =>
                         setMaxConsecutiveLosses(
-                          event.target
-                            .value
+                          event.target.value
                         )
                       }
-                      disabled={
-                        isBotRunning
-                      }
+                      disabled={isBotRunning}
                       className="w-full mt-2 bg-[#151d2d] border border-rose-900 p-3 rounded-xl text-sm font-mono text-rose-300"
                     />
-
                   </div>
-
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-
                   {!isBotRunning ? (
                     <button
                       type="button"
@@ -2123,9 +1516,7 @@ export default function BinarySpotPro() {
 
                   <button
                     type="button"
-                    onClick={
-                      requestLiveProposal
-                    }
+                    onClick={requestLiveProposal}
                     disabled={
                       proposalLoading ||
                       !isTradingConnected
@@ -2136,7 +1527,6 @@ export default function BinarySpotPro() {
                       ? 'Requesting Quote...'
                       : 'Get Live Proposal'}
                   </button>
-
                 </div>
 
                 {proposalError && (
@@ -2147,11 +1537,8 @@ export default function BinarySpotPro() {
 
                 {proposalData && (
                   <div className="rounded-2xl border border-cyan-500/30 bg-cyan-950/10 p-5">
-
                     <div className="flex flex-wrap justify-between gap-4">
-
                       <div>
-
                         <p className="text-[10px] uppercase tracking-wider font-black text-cyan-400">
                           Deriv Live Proposal
                         </p>
@@ -2159,19 +1546,15 @@ export default function BinarySpotPro() {
                         <p className="mt-1 text-xs font-mono text-slate-400 break-all">
                           ID: {proposalData.id}
                         </p>
-
                       </div>
 
                       <span className="px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs font-black text-emerald-400">
                         Quote Received
                       </span>
-
                     </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
-
                       <div className="bg-[#080b11] border border-slate-800 rounded-xl p-3">
-
                         <p className="text-[9px] uppercase text-slate-500">
                           Ask Price
                         </p>
@@ -2180,11 +1563,9 @@ export default function BinarySpotPro() {
                           {proposalData.ask_price ??
                             '-'}
                         </p>
-
                       </div>
 
                       <div className="bg-[#080b11] border border-slate-800 rounded-xl p-3">
-
                         <p className="text-[9px] uppercase text-slate-500">
                           Payout
                         </p>
@@ -2193,11 +1574,9 @@ export default function BinarySpotPro() {
                           {proposalData.payout ??
                             '-'}
                         </p>
-
                       </div>
 
                       <div className="bg-[#080b11] border border-slate-800 rounded-xl p-3">
-
                         <p className="text-[9px] uppercase text-slate-500">
                           Spot
                         </p>
@@ -2206,11 +1585,9 @@ export default function BinarySpotPro() {
                           {proposalData.spot ??
                             '-'}
                         </p>
-
                       </div>
 
                       <div className="bg-[#080b11] border border-slate-800 rounded-xl p-3">
-
                         <p className="text-[9px] uppercase text-slate-500">
                           Contract
                         </p>
@@ -2218,28 +1595,19 @@ export default function BinarySpotPro() {
                         <p className="mt-1 text-xs font-black text-cyan-400">
                           {strategy}
                         </p>
-
                       </div>
-
                     </div>
 
                     <p className="mt-4 text-[11px] text-slate-500">
                       This quote has not been purchased.
                     </p>
-
                   </div>
                 )}
-
               </div>
 
-              {/* BOT STREAM */}
-
               <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5 flex flex-col min-h-[600px]">
-
                 <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-
                   <div>
-
                     <h3 className="text-xs uppercase font-black tracking-wider text-slate-300">
                       Bot Stream
                     </h3>
@@ -2247,25 +1615,19 @@ export default function BinarySpotPro() {
                     <p className="text-[10px] text-slate-500 mt-1">
                       {simulationSignal}
                     </p>
-
                   </div>
 
                   <button
                     type="button"
-                    onClick={
-                      resetBotStats
-                    }
+                    onClick={resetBotStats}
                     className="text-[10px] text-slate-500"
                   >
                     Reset
                   </button>
-
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 mt-4">
-
                   <div className="bg-[#080b11] border border-slate-800 p-3 rounded-xl">
-
                     <div className="text-[10px] uppercase text-slate-500">
                       Trades
                     </div>
@@ -2273,11 +1635,9 @@ export default function BinarySpotPro() {
                     <div className="text-lg font-black font-mono">
                       {simulatedTrades}
                     </div>
-
                   </div>
 
                   <div className="bg-[#080b11] border border-slate-800 p-3 rounded-xl">
-
                     <div className="text-[10px] uppercase text-slate-500">
                       Win Rate
                     </div>
@@ -2285,11 +1645,9 @@ export default function BinarySpotPro() {
                     <div className="text-lg font-black font-mono text-emerald-400">
                       {winRate}%
                     </div>
-
                   </div>
 
                   <div className="bg-[#080b11] border border-slate-800 p-3 rounded-xl">
-
                     <div className="text-[10px] uppercase text-slate-500">
                       Wins
                     </div>
@@ -2297,11 +1655,9 @@ export default function BinarySpotPro() {
                     <div className="text-lg font-black font-mono text-emerald-400">
                       {simulatedWins}
                     </div>
-
                   </div>
 
                   <div className="bg-[#080b11] border border-slate-800 p-3 rounded-xl">
-
                     <div className="text-[10px] uppercase text-slate-500">
                       Losses
                     </div>
@@ -2309,15 +1665,11 @@ export default function BinarySpotPro() {
                     <div className="text-lg font-black font-mono text-rose-400">
                       {simulatedLosses}
                     </div>
-
                   </div>
-
                 </div>
 
                 <div className="mt-4 flex-1 bg-[#080b11] border border-slate-800 rounded-xl p-3 overflow-y-auto space-y-2">
-
-                  {botLogs.length ===
-                  0 ? (
+                  {botLogs.length === 0 ? (
                     <div className="h-full flex items-center justify-center text-center text-xs text-slate-600">
                       Strategy and proposal activity will appear here.
                     </div>
@@ -2328,9 +1680,7 @@ export default function BinarySpotPro() {
                         index
                       ) => (
                         <div
-                          key={
-                            index
-                          }
+                          key={index}
                           className={`p-2 rounded-lg border text-xs font-mono ${
                             log.type ===
                             'success'
@@ -2341,35 +1691,25 @@ export default function BinarySpotPro() {
                               : 'bg-slate-900 border-slate-800 text-slate-400'
                           }`}
                         >
-
                           <span className="opacity-50 mr-2">
                             [{log.time}]
                           </span>
 
                           {log.message}
-
                         </div>
                       )
                     )
                   )}
-
                 </div>
-
               </div>
-
             </div>
-
           </div>
         )}
-
-        {/* ANALYZER */}
 
         {activeTab ===
           'analyzer' && (
           <div className="space-y-6">
-
             <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5">
-
               <label className="text-xs uppercase font-black tracking-wider text-slate-500">
                 Synthetic Asset
               </label>
@@ -2378,8 +1718,7 @@ export default function BinarySpotPro() {
                 value={symbol}
                 onChange={(event) =>
                   setSymbol(
-                    event.target
-                      .value
+                    event.target.value
                   )
                 }
                 className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm"
@@ -2400,15 +1739,11 @@ export default function BinarySpotPro() {
                   Volatility 100 (1s)
                 </option>
               </select>
-
             </div>
 
             <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-6">
-
               <div className="flex flex-wrap justify-between items-center gap-4">
-
                 <div>
-
                   <h2 className="text-lg font-black">
                     Last 100 Ticks
                   </h2>
@@ -2416,11 +1751,9 @@ export default function BinarySpotPro() {
                   <p className="text-xs text-slate-400 mt-1">
                     Digit distribution for {symbol}
                   </p>
-
                 </div>
 
                 <div className="flex gap-2">
-
                   <span className="bg-slate-800 px-3 py-1.5 rounded-lg text-xs font-mono font-black text-cyan-400">
                     Even {evenOddRatio.even}%
                   </span>
@@ -2428,70 +1761,55 @@ export default function BinarySpotPro() {
                   <span className="bg-slate-800 px-3 py-1.5 rounded-lg text-xs font-mono font-black text-amber-400">
                     Odd {evenOddRatio.odd}%
                   </span>
-
                 </div>
-
               </div>
 
               <div className="grid grid-cols-5 sm:grid-cols-10 gap-3 mt-6">
-
                 {digitStats.map(
                   (
                     percentage,
                     digit
                   ) => (
                     <div
-                      key={
-                        digit
-                      }
+                      key={digit}
                       className="bg-[#080b11] border border-slate-800 rounded-xl p-3 text-center"
                     >
-
                       <div className="font-black text-white">
                         {digit}
                       </div>
 
                       <div className="h-24 mt-2 bg-slate-900 rounded-lg flex items-end overflow-hidden">
-
                         <div
                           className={`w-full ${
-                            percentage >=
-                            15
+                            percentage >= 15
                               ? 'bg-emerald-400'
-                              : percentage <=
-                                6
+                              : percentage <= 6
                               ? 'bg-rose-500'
                               : 'bg-cyan-500'
                           }`}
                           style={{
                             height: `${Math.min(
-                              percentage *
-                                4,
+                              percentage * 4,
                               100
                             )}%`,
                           }}
                         />
-
                       </div>
 
                       <div className="mt-2 text-xs font-mono font-black text-slate-300">
                         {percentage}%
                       </div>
-
                     </div>
                   )
                 )}
-
               </div>
 
               <div className="mt-7 pt-5 border-t border-slate-800">
-
                 <div className="text-xs uppercase font-black tracking-wider text-slate-500 mb-3">
                   Latest 25 Digits
                 </div>
 
                 <div className="flex flex-wrap gap-2">
-
                   {digitHistory
                     .slice(0, 25)
                     .map(
@@ -2500,16 +1818,11 @@ export default function BinarySpotPro() {
                         index
                       ) => (
                         <span
-                          key={
-                            index
-                          }
+                          key={index}
                           className={`h-9 w-9 rounded-xl flex items-center justify-center font-mono font-black ${
-                            index ===
-                            0
+                            index === 0
                               ? 'bg-emerald-500 text-black'
-                              : digit %
-                                  2 ===
-                                0
+                              : digit % 2 === 0
                               ? 'bg-slate-800 text-cyan-400 border border-slate-700'
                               : 'bg-slate-800 text-amber-400 border border-slate-700'
                           }`}
@@ -2518,18 +1831,12 @@ export default function BinarySpotPro() {
                         </span>
                       )
                     )}
-
                 </div>
-
               </div>
-
             </div>
-
           </div>
         )}
-
       </section>
-
     </main>
   );
 }
