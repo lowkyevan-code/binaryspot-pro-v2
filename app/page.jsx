@@ -16,23 +16,18 @@ const PUBLIC_WS_URL =
   'wss://api.derivws.com/trading/v1/options/ws/public';
 
 export default function BinarySpotPro() {
+  /* -----------------------------
+     AUTH
+  ----------------------------- */
+
   const [isLoading, setIsLoading] =
     useState(true);
 
-  const [
-    isConnecting,
-    setIsConnecting,
-  ] = useState(false);
+  const [isConnecting, setIsConnecting] =
+    useState(false);
 
-  const [
-    isAuthorized,
-    setIsAuthorized,
-  ] = useState(false);
-
-  const [
-    isMarketConnected,
-    setIsMarketConnected,
-  ] = useState(false);
+  const [isAuthorized, setIsAuthorized] =
+    useState(false);
 
   const [accountId, setAccountId] =
     useState('');
@@ -43,16 +38,27 @@ export default function BinarySpotPro() {
   const [currency, setCurrency] =
     useState('USD');
 
-  const [
-    accountType,
-    setAccountType,
-  ] = useState('');
+  const [accountType, setAccountType] =
+    useState('');
 
   const [authError, setAuthError] =
     useState('');
 
+  /* -----------------------------
+     NAVIGATION
+  ----------------------------- */
+
   const [activeTab, setActiveTab] =
     useState('overview');
+
+  /* -----------------------------
+     MARKET DATA
+  ----------------------------- */
+
+  const [
+    isMarketConnected,
+    setIsMarketConnected,
+  ] = useState(false);
 
   const [symbol, setSymbol] =
     useState('R_100');
@@ -86,6 +92,79 @@ export default function BinarySpotPro() {
     odd: 50,
   });
 
+  /* -----------------------------
+     BOT STUDIO
+  ----------------------------- */
+
+  const [strategy, setStrategy] =
+    useState('DIGITDIFF');
+
+  const [stake, setStake] =
+    useState('1.00');
+
+  const [duration, setDuration] =
+    useState('1');
+
+  const [
+    predictionDigit,
+    setPredictionDigit,
+  ] = useState('0');
+
+  const [takeProfit, setTakeProfit] =
+    useState('10.00');
+
+  const [stopLoss, setStopLoss] =
+    useState('20.00');
+
+  const [
+    martingale,
+    setMartingale,
+  ] = useState('2.00');
+
+  const [
+    maxConsecutiveLosses,
+    setMaxConsecutiveLosses,
+  ] = useState('3');
+
+  const [
+    isBotRunning,
+    setIsBotRunning,
+  ] = useState(false);
+
+  const [
+    simulationSignal,
+    setSimulationSignal,
+  ] = useState('Waiting for bot start');
+
+  const [
+    simulatedTrades,
+    setSimulatedTrades,
+  ] = useState(0);
+
+  const [
+    simulatedWins,
+    setSimulatedWins,
+  ] = useState(0);
+
+  const [
+    simulatedLosses,
+    setSimulatedLosses,
+  ] = useState(0);
+
+  const [
+    consecutiveLosses,
+    setConsecutiveLosses,
+  ] = useState(0);
+
+  const [
+    botLogs,
+    setBotLogs,
+  ] = useState([]);
+
+  /* -----------------------------
+     REFS
+  ----------------------------- */
+
   const wsRef = useRef(null);
 
   const subscriptionRef =
@@ -93,19 +172,63 @@ export default function BinarySpotPro() {
 
   const pingRef = useRef(null);
 
+  const botRunningRef =
+    useRef(false);
+
+  useEffect(() => {
+    botRunningRef.current =
+      isBotRunning;
+  }, [isBotRunning]);
+
+  /* -----------------------------
+     LOGGING
+  ----------------------------- */
+
+  const addBotLog =
+    useCallback(
+      (
+        message,
+        type = 'info'
+      ) => {
+        const time =
+          new Date().toLocaleTimeString();
+
+        setBotLogs(
+          (previous) => [
+            {
+              time,
+              message,
+              type,
+            },
+            ...previous.slice(
+              0,
+              79
+            ),
+          ]
+        );
+      },
+      []
+    );
+
+  /* -----------------------------
+     AUTH SESSION
+  ----------------------------- */
+
   const loadDerivSession =
     useCallback(async () => {
       try {
         setIsLoading(true);
 
-        const response = await fetch(
-          '/api/auth/deriv/session',
-          {
-            method: 'GET',
-            credentials: 'include',
-            cache: 'no-store',
-          }
-        );
+        const response =
+          await fetch(
+            '/api/auth/deriv/session',
+            {
+              method: 'GET',
+              credentials:
+                'include',
+              cache: 'no-store',
+            }
+          );
 
         const data =
           await response.json();
@@ -114,10 +237,13 @@ export default function BinarySpotPro() {
           !response.ok ||
           !data.authenticated
         ) {
-          setIsAuthorized(false);
+          setIsAuthorized(
+            false
+          );
 
           if (
-            response.status !== 401 &&
+            response.status !==
+              401 &&
             data.error
           ) {
             setAuthError(
@@ -129,7 +255,9 @@ export default function BinarySpotPro() {
         }
 
         if (!data.account) {
-          setIsAuthorized(true);
+          setIsAuthorized(
+            true
+          );
 
           setAuthError(
             'Deriv authorization succeeded, but no Options trading account was found.'
@@ -165,7 +293,9 @@ export default function BinarySpotPro() {
           error
         );
 
-        setIsAuthorized(false);
+        setIsAuthorized(
+          false
+        );
 
         setAuthError(
           'Unable to load your Deriv account.'
@@ -210,6 +340,10 @@ export default function BinarySpotPro() {
 
     loadDerivSession();
   }, [loadDerivSession]);
+
+  /* -----------------------------
+     DIGIT STATISTICS
+  ----------------------------- */
 
   const updateDigitStats =
     useCallback((digit) => {
@@ -273,6 +407,154 @@ export default function BinarySpotPro() {
       );
     }, []);
 
+  /* -----------------------------
+     SIMULATION ENGINE
+  ----------------------------- */
+
+  const evaluateBotTick =
+    useCallback(
+      (digit) => {
+        if (
+          !botRunningRef.current
+        ) {
+          return;
+        }
+
+        const prediction =
+          Number(
+            predictionDigit
+          );
+
+        let wouldWin = false;
+
+        if (
+          strategy ===
+          'DIGITDIFF'
+        ) {
+          wouldWin =
+            digit !== prediction;
+        }
+
+        if (
+          strategy ===
+          'DIGITMATCH'
+        ) {
+          wouldWin =
+            digit === prediction;
+        }
+
+        if (
+          strategy ===
+          'DIGITEVEN'
+        ) {
+          wouldWin =
+            digit % 2 === 0;
+        }
+
+        if (
+          strategy ===
+          'DIGITODD'
+        ) {
+          wouldWin =
+            digit % 2 !== 0;
+        }
+
+        if (
+          strategy ===
+          'DIGITOVER'
+        ) {
+          wouldWin =
+            digit > prediction;
+        }
+
+        if (
+          strategy ===
+          'DIGITUNDER'
+        ) {
+          wouldWin =
+            digit < prediction;
+        }
+
+        setSimulatedTrades(
+          (value) =>
+            value + 1
+        );
+
+        if (wouldWin) {
+          setSimulatedWins(
+            (value) =>
+              value + 1
+          );
+
+          setConsecutiveLosses(
+            0
+          );
+
+          setSimulationSignal(
+            `SIMULATED WIN — digit ${digit}`
+          );
+
+          addBotLog(
+            `Simulation WIN | ${strategy} | Digit ${digit}`,
+            'success'
+          );
+        } else {
+          setSimulatedLosses(
+            (value) =>
+              value + 1
+          );
+
+          setConsecutiveLosses(
+            (previous) => {
+              const next =
+                previous + 1;
+
+              if (
+                next >=
+                Number(
+                  maxConsecutiveLosses
+                )
+              ) {
+                setIsBotRunning(
+                  false
+                );
+
+                setSimulationSignal(
+                  'Bot stopped by loss limit'
+                );
+
+                addBotLog(
+                  `Circuit breaker activated after ${next} consecutive simulated losses.`,
+                  'error'
+                );
+              }
+
+              return next;
+            }
+          );
+
+          setSimulationSignal(
+            `SIMULATED LOSS — digit ${digit}`
+          );
+
+          addBotLog(
+            `Simulation LOSS | ${strategy} | Digit ${digit}`,
+            'error'
+          );
+        }
+      },
+      [
+        strategy,
+        predictionDigit,
+        maxConsecutiveLosses,
+        addBotLog,
+      ]
+    );
+
+  /* -----------------------------
+     PUBLIC MARKET WEBSOCKET
+  ----------------------------- */
+
   const connectMarket =
     useCallback(() => {
       if (
@@ -308,7 +590,9 @@ export default function BinarySpotPro() {
           })
         );
 
-        if (pingRef.current) {
+        if (
+          pingRef.current
+        ) {
           clearInterval(
             pingRef.current
           );
@@ -408,6 +692,10 @@ export default function BinarySpotPro() {
                 updateDigitStats(
                   digit
                 );
+
+                evaluateBotTick(
+                  digit
+                );
               }
             }
           } catch (error) {
@@ -432,6 +720,7 @@ export default function BinarySpotPro() {
     }, [
       symbol,
       updateDigitStats,
+      evaluateBotTick,
     ]);
 
   useEffect(() => {
@@ -456,6 +745,10 @@ export default function BinarySpotPro() {
       }
     };
   }, [connectMarket]);
+
+  /* -----------------------------
+     SYMBOL CHANGE
+  ----------------------------- */
 
   useEffect(() => {
     const ws =
@@ -484,6 +777,7 @@ export default function BinarySpotPro() {
     }
 
     setDigitHistory([]);
+
     setDigitStats(
       Array(10).fill(0)
     );
@@ -500,6 +794,10 @@ export default function BinarySpotPro() {
       })
     );
   }, [symbol]);
+
+  /* -----------------------------
+     OAUTH START
+  ----------------------------- */
 
   const connectDeriv =
     async () => {
@@ -639,13 +937,74 @@ export default function BinarySpotPro() {
           error
         );
 
-        setIsConnecting(false);
+        setIsConnecting(
+          false
+        );
 
         setAuthError(
           'Unable to open Deriv authorization.'
         );
       }
     };
+
+  /* -----------------------------
+     BOT CONTROLS
+  ----------------------------- */
+
+  const startBot = () => {
+    if (
+      !isMarketConnected
+    ) {
+      addBotLog(
+        'Cannot start: market feed is offline.',
+        'error'
+      );
+
+      return;
+    }
+
+    setSimulatedTrades(0);
+    setSimulatedWins(0);
+    setSimulatedLosses(0);
+    setConsecutiveLosses(0);
+
+    setSimulationSignal(
+      'Simulation running'
+    );
+
+    setIsBotRunning(true);
+
+    addBotLog(
+      `Bot simulation started: ${strategy}`,
+      'system'
+    );
+  };
+
+  const stopBot = () => {
+    setIsBotRunning(false);
+
+    setSimulationSignal(
+      'Simulation stopped'
+    );
+
+    addBotLog(
+      'Bot simulation stopped manually.',
+      'system'
+    );
+  };
+
+  const resetBotStats = () => {
+    setSimulatedTrades(0);
+    setSimulatedWins(0);
+    setSimulatedLosses(0);
+    setConsecutiveLosses(0);
+
+    setSimulationSignal(
+      'Waiting for bot start'
+    );
+
+    setBotLogs([]);
+  };
 
   const formattedQuote =
     lastTick !== null
@@ -658,10 +1017,32 @@ export default function BinarySpotPro() {
         )
       : 'Waiting...';
 
+  const winRate =
+    simulatedTrades > 0
+      ? (
+          (simulatedWins /
+            simulatedTrades) *
+          100
+        ).toFixed(1)
+      : '0.0';
+
+  const needsPredictionDigit =
+    [
+      'DIGITDIFF',
+      'DIGITMATCH',
+      'DIGITOVER',
+      'DIGITUNDER',
+    ].includes(strategy);
+
+  /* -----------------------------
+     UI
+  ----------------------------- */
+
   return (
     <main className="min-h-screen bg-[#080b11] text-slate-100">
 
-      {/* Live Market Bar */}
+      {/* LIVE BAR */}
+
       <div className="border-b border-slate-800 bg-[#0e131d] px-4 py-2.5">
 
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
@@ -704,8 +1085,7 @@ export default function BinarySpotPro() {
             </span>
 
             <span className="bg-slate-800 border border-slate-700 px-2 py-1 rounded text-cyan-400 font-black">
-              {lastDigit !==
-              null
+              {lastDigit !== null
                 ? lastDigit
                 : '-'}
             </span>
@@ -716,7 +1096,8 @@ export default function BinarySpotPro() {
 
       </div>
 
-      {/* Header */}
+      {/* HEADER */}
+
       <header className="border-b border-slate-800 bg-[#0d121c]">
 
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 min-h-16 py-3 flex items-center justify-between gap-3">
@@ -748,9 +1129,7 @@ export default function BinarySpotPro() {
           {!isAuthorized ? (
             <button
               type="button"
-              onClick={
-                connectDeriv
-              }
+              onClick={connectDeriv}
               disabled={
                 isLoading ||
                 isConnecting
@@ -782,8 +1161,10 @@ export default function BinarySpotPro() {
                     ).toLocaleString(
                       'en-US',
                       {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
+                        minimumFractionDigits:
+                          2,
+                        maximumFractionDigits:
+                          2,
                       }
                     )}`
                   : 'Connected'}
@@ -796,7 +1177,8 @@ export default function BinarySpotPro() {
 
       </header>
 
-      {/* Navigation */}
+      {/* NAV */}
+
       <div className="border-b border-slate-800 bg-[#0b1019]">
 
         <div className="max-w-7xl mx-auto px-4 py-2 flex gap-2 overflow-x-auto">
@@ -805,6 +1187,10 @@ export default function BinarySpotPro() {
             {
               id: 'overview',
               label: '🏠 Overview',
+            },
+            {
+              id: 'bots',
+              label: '🤖 Bot Studio',
             },
             {
               id: 'analyzer',
@@ -835,7 +1221,8 @@ export default function BinarySpotPro() {
 
       </div>
 
-      {/* Main */}
+      {/* CONTENT */}
+
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
         {authError && (
@@ -844,22 +1231,19 @@ export default function BinarySpotPro() {
           </div>
         )}
 
+        {/* OVERVIEW */}
+
         {activeTab ===
           'overview' && (
           <div className="space-y-8">
 
-            <div className="relative overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-[#121824] via-[#0d121c] to-[#080b11] p-8 md:p-12 shadow-2xl">
+            <div className="rounded-3xl border border-slate-800 bg-gradient-to-br from-[#121824] via-[#0d121c] to-[#080b11] p-8 md:p-12 shadow-2xl">
 
               <div className="max-w-2xl space-y-5">
 
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold">
-
                   <span className="h-2 w-2 rounded-full bg-emerald-400" />
-
-                  {isAuthorized
-                    ? 'Deriv Account Authorized'
-                    : 'BinarySpot Pro Trading Platform'}
-
+                  BinarySpot Pro Trading Platform
                 </div>
 
                 <h1 className="text-4xl sm:text-5xl font-black text-white tracking-tight leading-tight">
@@ -867,77 +1251,486 @@ export default function BinarySpotPro() {
                 </h1>
 
                 <p className="text-slate-400 text-sm sm:text-base leading-relaxed">
-                  Live Deriv market data is now feeding BinarySpot Pro in real time.
+                  Live market data, digit analytics and bot strategy testing are now active.
                 </p>
 
-                {!isAuthorized &&
-                  !isLoading && (
-                    <button
-                      type="button"
-                      onClick={
-                        connectDeriv
-                      }
-                      className="px-6 py-3.5 bg-emerald-500 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl"
-                    >
-                      Connect Deriv Account
-                    </button>
-                  )}
-
-                {isAuthorized && (
-                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-
-                    <p className="text-sm font-bold text-emerald-400">
-                      ✓ Deriv authorization successful
-                    </p>
-
-                    <p className="mt-1 text-xs text-slate-400">
-                      OAuth and account access are active.
-                    </p>
-
-                  </div>
-                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setActiveTab(
+                      'bots'
+                    )
+                  }
+                  className="px-6 py-3.5 bg-emerald-500 text-black font-black text-xs uppercase tracking-wider rounded-xl"
+                >
+                  Open Bot Studio
+                </button>
 
               </div>
 
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          </div>
+        )}
 
-              <div className="p-6 rounded-2xl bg-[#0f1522] border border-slate-800">
+        {/* BOT STUDIO */}
 
-                <div className="text-xs uppercase font-black text-slate-500">
-                  Live Asset
-                </div>
+        {activeTab ===
+          'bots' && (
+          <div className="space-y-6">
 
-                <div className="mt-2 text-xl font-mono font-black text-amber-400">
-                  {symbol}
-                </div>
+            <div className="flex flex-wrap justify-between items-center gap-4">
 
-              </div>
+              <div>
 
-              <div className="p-6 rounded-2xl bg-[#0f1522] border border-slate-800">
+                <h2 className="text-xl font-black text-white">
+                  Bot Studio
+                </h2>
 
-                <div className="text-xs uppercase font-black text-slate-500">
-                  Live Quote
-                </div>
-
-                <div className="mt-2 text-xl font-mono font-black text-white">
-                  {formattedQuote}
-                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  Strategy simulation using your live Deriv tick feed.
+                </p>
 
               </div>
 
-              <div className="p-6 rounded-2xl bg-[#0f1522] border border-slate-800">
+              <span
+                className={`px-3 py-1.5 rounded-full text-xs font-black uppercase ${
+                  isBotRunning
+                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-slate-800 text-slate-400'
+                }`}
+              >
+                {isBotRunning
+                  ? 'Simulation Active'
+                  : 'Standby'}
+              </span>
 
-                <div className="text-xs uppercase font-black text-slate-500">
-                  Last Digit
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+              <div className="lg:col-span-2 bg-[#0f1522] border border-slate-800 rounded-2xl p-6 space-y-6">
+
+                <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+
+                  <p className="text-xs font-black uppercase tracking-wider text-amber-400">
+                    Simulation Mode
+                  </p>
+
+                  <p className="mt-1 text-xs text-slate-400">
+                    No real Deriv orders are being placed yet.
+                  </p>
+
                 </div>
 
-                <div className="mt-2 text-xl font-mono font-black text-cyan-400">
-                  {lastDigit !==
-                  null
-                    ? lastDigit
-                    : '-'}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+                  <div>
+
+                    <label className="text-xs font-bold text-slate-400">
+                      Synthetic Asset
+                    </label>
+
+                    <select
+                      value={symbol}
+                      onChange={(event) =>
+                        setSymbol(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isBotRunning
+                      }
+                      className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm"
+                    >
+                      <option value="R_100">
+                        Volatility 100 Index
+                      </option>
+
+                      <option value="R_50">
+                        Volatility 50 Index
+                      </option>
+
+                      <option value="R_25">
+                        Volatility 25 Index
+                      </option>
+
+                      <option value="1HZ100V">
+                        Volatility 100 (1s)
+                      </option>
+                    </select>
+
+                  </div>
+
+                  <div>
+
+                    <label className="text-xs font-bold text-slate-400">
+                      Strategy
+                    </label>
+
+                    <select
+                      value={
+                        strategy
+                      }
+                      onChange={(event) =>
+                        setStrategy(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isBotRunning
+                      }
+                      className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm"
+                    >
+                      <option value="DIGITDIFF">
+                        Digit Differs
+                      </option>
+
+                      <option value="DIGITMATCH">
+                        Digit Matches
+                      </option>
+
+                      <option value="DIGITEVEN">
+                        Digit Even
+                      </option>
+
+                      <option value="DIGITODD">
+                        Digit Odd
+                      </option>
+
+                      <option value="DIGITOVER">
+                        Digit Over
+                      </option>
+
+                      <option value="DIGITUNDER">
+                        Digit Under
+                      </option>
+                    </select>
+
+                  </div>
+
+                  <div>
+
+                    <label className="text-xs font-bold text-slate-400">
+                      Stake
+                    </label>
+
+                    <input
+                      type="number"
+                      min="0.35"
+                      step="0.01"
+                      value={stake}
+                      onChange={(event) =>
+                        setStake(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isBotRunning
+                      }
+                      className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm font-mono"
+                    />
+
+                  </div>
+
+                  <div>
+
+                    <label className="text-xs font-bold text-slate-400">
+                      Duration (Ticks)
+                    </label>
+
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={duration}
+                      onChange={(event) =>
+                        setDuration(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isBotRunning
+                      }
+                      className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm font-mono"
+                    />
+
+                  </div>
+
+                  {needsPredictionDigit && (
+                    <div>
+
+                      <label className="text-xs font-bold text-cyan-400">
+                        Prediction Digit
+                      </label>
+
+                      <input
+                        type="number"
+                        min="0"
+                        max="9"
+                        value={
+                          predictionDigit
+                        }
+                        onChange={(event) =>
+                          setPredictionDigit(
+                            event.target
+                              .value
+                          )
+                        }
+                        disabled={
+                          isBotRunning
+                        }
+                        className="w-full mt-2 bg-[#151d2d] border border-cyan-900 p-3 rounded-xl text-sm font-mono text-cyan-300"
+                      />
+
+                    </div>
+                  )}
+
+                  <div>
+
+                    <label className="text-xs font-bold text-slate-400">
+                      Martingale Multiplier
+                    </label>
+
+                    <input
+                      type="number"
+                      min="1"
+                      step="0.1"
+                      value={martingale}
+                      onChange={(event) =>
+                        setMartingale(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isBotRunning
+                      }
+                      className="w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm font-mono"
+                    />
+
+                  </div>
+
+                  <div>
+
+                    <label className="text-xs font-bold text-emerald-400">
+                      Take Profit
+                    </label>
+
+                    <input
+                      type="number"
+                      value={
+                        takeProfit
+                      }
+                      onChange={(event) =>
+                        setTakeProfit(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isBotRunning
+                      }
+                      className="w-full mt-2 bg-[#151d2d] border border-emerald-900 p-3 rounded-xl text-sm font-mono text-emerald-300"
+                    />
+
+                  </div>
+
+                  <div>
+
+                    <label className="text-xs font-bold text-rose-400">
+                      Stop Loss
+                    </label>
+
+                    <input
+                      type="number"
+                      value={stopLoss}
+                      onChange={(event) =>
+                        setStopLoss(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isBotRunning
+                      }
+                      className="w-full mt-2 bg-[#151d2d] border border-rose-900 p-3 rounded-xl text-sm font-mono text-rose-300"
+                    />
+
+                  </div>
+
+                  <div>
+
+                    <label className="text-xs font-bold text-rose-400">
+                      Max Consecutive Losses
+                    </label>
+
+                    <input
+                      type="number"
+                      min="1"
+                      max="20"
+                      value={
+                        maxConsecutiveLosses
+                      }
+                      onChange={(event) =>
+                        setMaxConsecutiveLosses(
+                          event.target
+                            .value
+                        )
+                      }
+                      disabled={
+                        isBotRunning
+                      }
+                      className="w-full mt-2 bg-[#151d2d] border border-rose-900 p-3 rounded-xl text-sm font-mono text-rose-300"
+                    />
+
+                  </div>
+
+                </div>
+
+                {!isBotRunning ? (
+                  <button
+                    type="button"
+                    onClick={startBot}
+                    className="w-full py-4 bg-gradient-to-r from-emerald-500 to-teal-400 text-black font-black text-sm uppercase tracking-wider rounded-xl"
+                  >
+                    ▶ Start Simulation
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={stopBot}
+                    className="w-full py-4 bg-rose-600 text-white font-black text-sm uppercase tracking-wider rounded-xl"
+                  >
+                    ⏹ Stop Simulation
+                  </button>
+                )}
+
+              </div>
+
+              {/* LOGS */}
+
+              <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5 flex flex-col min-h-[550px]">
+
+                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+
+                  <div>
+
+                    <h3 className="text-xs uppercase font-black tracking-wider text-slate-300">
+                      Bot Stream
+                    </h3>
+
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      {simulationSignal}
+                    </p>
+
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={
+                      resetBotStats
+                    }
+                    className="text-[10px] text-slate-500"
+                  >
+                    Reset
+                  </button>
+
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 mt-4">
+
+                  <div className="bg-[#080b11] border border-slate-800 p-3 rounded-xl">
+
+                    <div className="text-[10px] uppercase text-slate-500">
+                      Trades
+                    </div>
+
+                    <div className="text-lg font-black font-mono">
+                      {simulatedTrades}
+                    </div>
+
+                  </div>
+
+                  <div className="bg-[#080b11] border border-slate-800 p-3 rounded-xl">
+
+                    <div className="text-[10px] uppercase text-slate-500">
+                      Win Rate
+                    </div>
+
+                    <div className="text-lg font-black font-mono text-emerald-400">
+                      {winRate}%
+                    </div>
+
+                  </div>
+
+                  <div className="bg-[#080b11] border border-slate-800 p-3 rounded-xl">
+
+                    <div className="text-[10px] uppercase text-slate-500">
+                      Wins
+                    </div>
+
+                    <div className="text-lg font-black font-mono text-emerald-400">
+                      {simulatedWins}
+                    </div>
+
+                  </div>
+
+                  <div className="bg-[#080b11] border border-slate-800 p-3 rounded-xl">
+
+                    <div className="text-[10px] uppercase text-slate-500">
+                      Losses
+                    </div>
+
+                    <div className="text-lg font-black font-mono text-rose-400">
+                      {simulatedLosses}
+                    </div>
+
+                  </div>
+
+                </div>
+
+                <div className="mt-4 flex-1 bg-[#080b11] border border-slate-800 rounded-xl p-3 overflow-y-auto space-y-2">
+
+                  {botLogs.length ===
+                  0 ? (
+                    <div className="h-full flex items-center justify-center text-center text-xs text-slate-600">
+                      Start the simulation to test the strategy against live ticks.
+                    </div>
+                  ) : (
+                    botLogs.map(
+                      (
+                        log,
+                        index
+                      ) => (
+                        <div
+                          key={
+                            index
+                          }
+                          className={`p-2 rounded-lg border text-xs font-mono ${
+                            log.type ===
+                            'success'
+                              ? 'bg-emerald-950/30 border-emerald-900 text-emerald-300'
+                              : log.type ===
+                                'error'
+                              ? 'bg-rose-950/30 border-rose-900 text-rose-300'
+                              : 'bg-slate-900 border-slate-800 text-slate-400'
+                          }`}
+                        >
+                          <span className="opacity-50 mr-2">
+                            [{log.time}]
+                          </span>
+
+                          {log.message}
+                        </div>
+                      )
+                    )
+                  )}
+
                 </div>
 
               </div>
@@ -946,6 +1739,8 @@ export default function BinarySpotPro() {
 
           </div>
         )}
+
+        {/* ANALYZER */}
 
         {activeTab ===
           'analyzer' && (
@@ -980,7 +1775,7 @@ export default function BinarySpotPro() {
                 </option>
 
                 <option value="1HZ100V">
-                  Volatility 100 (1s) Index
+                  Volatility 100 (1s)
                 </option>
               </select>
 
@@ -997,7 +1792,7 @@ export default function BinarySpotPro() {
                   </h2>
 
                   <p className="text-xs text-slate-400 mt-1">
-                    Digit frequency distribution for {symbol}
+                    Digit distribution for {symbol}
                   </p>
 
                 </div>
@@ -1019,9 +1814,14 @@ export default function BinarySpotPro() {
               <div className="grid grid-cols-5 sm:grid-cols-10 gap-3 mt-6">
 
                 {digitStats.map(
-                  (percentage, digit) => (
+                  (
+                    percentage,
+                    digit
+                  ) => (
                     <div
-                      key={digit}
+                      key={
+                        digit
+                      }
                       className="bg-[#080b11] border border-slate-800 rounded-xl p-3 text-center"
                     >
 
