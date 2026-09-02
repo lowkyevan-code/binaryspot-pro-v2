@@ -75,6 +75,14 @@ import {
   describeContractRecovery,
 } from '../lib/contractRecovery';
 
+import {
+  createProposalFreshness,
+  registerProposalFreshness,
+  canBuyFreshProposal,
+  clearProposalFreshness,
+  getProposalFreshnessStatus,
+} from '../lib/proposalFreshness';
+
 const CLIENT_ID = '34hh45FQkPfMgbgj20uoR';
 
 const REDIRECT_URI =
@@ -242,6 +250,9 @@ export default function BinarySpotPro() {
   const [proposalData, setProposalData] =
     useState(null);
 
+  const [proposalClock, setProposalClock] =
+    useState(0);
+
   const [buyLoading, setBuyLoading] =
     useState(false);
 
@@ -287,6 +298,14 @@ export default function BinarySpotPro() {
 
   const pipSizeCacheRef = useRef(
     createPipSizeCache()
+  );
+
+  // ============================================================
+  // PROPOSAL FRESHNESS
+  // ============================================================
+
+  const proposalFreshnessRef = useRef(
+    createProposalFreshness()
   );
 
   // ============================================================
@@ -453,6 +472,31 @@ export default function BinarySpotPro() {
   }, [cooldownSeconds]);
 
   // ============================================================
+  // MANUAL PROPOSAL CLOCK
+  // ============================================================
+
+  useEffect(() => {
+    if (!proposalData?.id) {
+      return undefined;
+    }
+
+    setProposalClock(
+      Date.now()
+    );
+
+    const timer =
+      setInterval(() => {
+        setProposalClock(
+          Date.now()
+        );
+      }, 1000);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [proposalData?.id]);
+
+  // ============================================================
   // HELPERS
   // ============================================================
 
@@ -461,6 +505,17 @@ export default function BinarySpotPro() {
 
     return requestIdRef.current;
   };
+
+  const clearManualProposal = useCallback(() => {
+    proposalFreshnessRef.current =
+      clearProposalFreshness();
+
+    setProposalData(null);
+
+    setProposalClock(
+      Date.now()
+    );
+  }, []);
 
   const syncLifecycleLabel = useCallback(() => {
     setLifecycleLabel(
@@ -970,6 +1025,8 @@ export default function BinarySpotPro() {
       }
 
       try {
+        clearManualProposal();
+
         const stake =
           currentStakeRef.current;
 
@@ -1064,6 +1121,7 @@ export default function BinarySpotPro() {
       stopAutoBot,
       syncLifecycleLabel,
       syncRequestStatus,
+      clearManualProposal,
     ]
   );
 
@@ -1698,6 +1756,14 @@ export default function BinarySpotPro() {
                   message
                 );
 
+                if (
+                  !isAutoOwner(
+                    resolved.match.owner
+                  )
+                ) {
+                  clearManualProposal();
+                }
+
                 syncRequestStatus();
               }
             }
@@ -1839,12 +1905,12 @@ export default function BinarySpotPro() {
 
             setProposalError('');
 
-            setProposalData(
-              data.proposal
-            );
-
             const owner =
               resolved.match.owner;
+
+            // ==================================================
+            // AUTO PROPOSAL
+            // ==================================================
 
             if (
               isAutoOwner(owner)
@@ -1966,8 +2032,47 @@ export default function BinarySpotPro() {
               return;
             }
 
+            // ==================================================
+            // MANUAL PROPOSAL
+            // ==================================================
+
+            const freshnessRegistration =
+              registerProposalFreshness(
+                proposalFreshnessRef.current,
+                {
+                  proposalId:
+                    data.proposal.id,
+
+                  createdAt:
+                    Date.now(),
+                }
+              );
+
+            if (
+              !freshnessRegistration.valid
+            ) {
+              clearManualProposal();
+
+              setProposalError(
+                freshnessRegistration.reason
+              );
+
+              return;
+            }
+
+            proposalFreshnessRef.current =
+              freshnessRegistration.freshness;
+
+            setProposalData(
+              data.proposal
+            );
+
+            setProposalClock(
+              Date.now()
+            );
+
             addBotLog(
-              `Manual proposal ready: ${data.proposal.id}`,
+              `Manual proposal ready: ${data.proposal.id}. Freshness timer started.`,
               'success'
             );
           }
@@ -2013,6 +2118,12 @@ export default function BinarySpotPro() {
             setBuyLoading(false);
 
             setBuyError('');
+
+            if (
+              !isAutoOwner(owner)
+            ) {
+              clearManualProposal();
+            }
 
             const contractId =
               data.buy.contract_id;
@@ -2091,8 +2202,6 @@ export default function BinarySpotPro() {
 
             contractOpenRef.current =
               true;
-
-            setProposalData(null);
 
             setActiveContract({
               contractId,
@@ -2451,6 +2560,7 @@ export default function BinarySpotPro() {
       syncLifecycleLabel,
       syncRecoveryLabel,
       syncRequestStatus,
+      clearManualProposal,
     ]
   );
 
@@ -2731,6 +2841,9 @@ export default function BinarySpotPro() {
         recoveryRef.current =
           clearContractRecovery();
 
+        proposalFreshnessRef.current =
+          clearProposalFreshness();
+
         recoveryFetchRunningRef.current =
           false;
 
@@ -2741,6 +2854,9 @@ export default function BinarySpotPro() {
         syncRecoveryLabel();
 
         setProposalData(null);
+        setProposalClock(
+          Date.now()
+        );
         setProposalError('');
 
         setBuyError('');
@@ -2879,6 +2995,8 @@ export default function BinarySpotPro() {
       stopAutoBot(
         'Switching accounts'
       );
+
+      clearManualProposal();
 
       await loadDerivSession(
         newAccountId
@@ -3331,6 +3449,8 @@ export default function BinarySpotPro() {
       return;
     }
 
+    clearManualProposal();
+
     const startingStake =
       Number(baseStake);
 
@@ -3385,7 +3505,7 @@ export default function BinarySpotPro() {
     );
 
     addBotLog(
-      `PIP PRECISION CACHE ACTIVE — ${strategy}`,
+      `PROPOSAL FRESHNESS GUARD ACTIVE — ${strategy}`,
       'system'
     );
 
@@ -3481,6 +3601,8 @@ export default function BinarySpotPro() {
       }
 
       try {
+        clearManualProposal();
+
         lifecycleRef.current =
           beginTradeLifecycle({
             mode: 'manual',
@@ -3522,6 +3644,7 @@ export default function BinarySpotPro() {
         setProposalLoading(true);
 
         setProposalError('');
+        setBuyError('');
 
         ws.send(
           JSON.stringify(
@@ -3545,6 +3668,8 @@ export default function BinarySpotPro() {
           false;
 
         setProposalLoading(false);
+
+        clearManualProposal();
 
         setProposalError(
           error.message
@@ -3584,6 +3709,32 @@ export default function BinarySpotPro() {
       ) {
         setBuyError(
           'Get a proposal first.'
+        );
+
+        return;
+      }
+
+      const freshnessPermission =
+        canBuyFreshProposal(
+          proposalFreshnessRef.current,
+          {
+            proposalId:
+              proposalData.id,
+
+            now:
+              Date.now(),
+          }
+        );
+
+      if (
+        !freshnessPermission.allowed
+      ) {
+        setBuyError(
+          freshnessPermission.reason
+        );
+
+        setProposalClock(
+          Date.now()
         );
 
         return;
@@ -3713,6 +3864,14 @@ export default function BinarySpotPro() {
 
       setBuyError('');
 
+      addBotLog(
+        `Manual proposal ${proposalData.id} passed freshness guard. BUY sent with ${Math.ceil(
+          freshnessPermission.remainingMs /
+            1000
+        )}s freshness remaining.`,
+        'trade'
+      );
+
       ws.send(
         JSON.stringify({
           buy:
@@ -3815,6 +3974,9 @@ export default function BinarySpotPro() {
       recoveryRef.current =
         clearContractRecovery();
 
+      proposalFreshnessRef.current =
+        clearProposalFreshness();
+
       clearRecoveryTimer();
 
       syncLifecycleLabel();
@@ -3824,6 +3986,10 @@ export default function BinarySpotPro() {
       setBotLogs([]);
 
       setProposalData(null);
+
+      setProposalClock(
+        Date.now()
+      );
 
       setProposalError('');
 
@@ -3929,6 +4095,13 @@ export default function BinarySpotPro() {
       : pipCacheStatus.hasCachedPrecision
       ? `Cached pip ${pipCacheStatus.pipSize}`
       : 'Fallback';
+
+  const proposalFreshnessStatus =
+    getProposalFreshnessStatus(
+      proposalFreshnessRef.current,
+      proposalClock ||
+        Date.now()
+    );
 
   // ============================================================
   // UI
@@ -4147,22 +4320,21 @@ export default function BinarySpotPro() {
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Precision Cache Active
+                Proposal Freshness Guard Active
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Stable Last-Digit Precision Across Every Tick.
+                Fresh Manual Proposals Only.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                BinarySpot Pro now remembers each symbol&apos;s
-                observed pip size. If a later tick omits pip_size,
-                the cached precision is reused before the last digit
-                is extracted.
+                Manual demo proposals are now timestamped when they
+                arrive. If the proposal sits too long, BinarySpot Pro
+                blocks the purchase and requires a fresh quote.
               </p>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <StatBox
                 label="Session"
                 value={
@@ -4203,6 +4375,20 @@ export default function BinarySpotPro() {
                     : 'text-amber-400'
                 }
               />
+
+              <StatBox
+                label="Manual Proposal"
+                value={
+                  proposalFreshnessStatus.label
+                }
+                accent={
+                  proposalFreshnessStatus.fresh
+                    ? 'text-emerald-400'
+                    : proposalFreshnessStatus.expired
+                    ? 'text-rose-400'
+                    : 'text-slate-400'
+                }
+              />
             </div>
           </div>
         )}
@@ -4217,9 +4403,9 @@ export default function BinarySpotPro() {
                 </h2>
 
                 <p className="mt-1 text-xs text-slate-400">
-                  Demo automation with cached tick precision,
-                  request-ID protection, lifecycle ownership and
-                  active-contract recovery.
+                  Demo automation with proposal freshness,
+                  cached tick precision, request-ID protection,
+                  lifecycle ownership and contract recovery.
                 </p>
               </div>
 
@@ -4335,6 +4521,8 @@ export default function BinarySpotPro() {
                       onChange={(
                         event
                       ) => {
+                        clearManualProposal();
+
                         setSymbol(
                           event.target.value
                         );
@@ -4413,11 +4601,13 @@ export default function BinarySpotPro() {
                       }
                       onChange={(
                         event
-                      ) =>
+                      ) => {
+                        clearManualProposal();
+
                         setStrategy(
                           event.target.value
-                        )
-                      }
+                        );
+                      }}
                       disabled={
                         isAutoBotRunning ||
                         isContractOpen ||
@@ -4470,11 +4660,13 @@ export default function BinarySpotPro() {
                           }
                           onChange={(
                             event
-                          ) =>
+                          ) => {
+                            clearManualProposal();
+
                             setPredictionDigit(
                               event.target.value
-                            )
-                          }
+                            );
+                          }}
                           disabled={
                             isAutoBotRunning ||
                             proposalLoading ||
@@ -4489,9 +4681,10 @@ export default function BinarySpotPro() {
                       <Field label="Smart Digit">
                         <button
                           type="button"
-                          onClick={
-                            applySuggestedDigit
-                          }
+                          onClick={() => {
+                            clearManualProposal();
+                            applySuggestedDigit();
+                          }}
                           disabled={
                             isAutoBotRunning ||
                             proposalLoading ||
@@ -4542,6 +4735,8 @@ export default function BinarySpotPro() {
                       onChange={(
                         event
                       ) => {
+                        clearManualProposal();
+
                         setBaseStake(
                           event.target.value
                         );
@@ -4607,11 +4802,13 @@ export default function BinarySpotPro() {
                       }
                       onChange={(
                         event
-                      ) =>
+                      ) => {
+                        clearManualProposal();
+
                         setDuration(
                           event.target.value
-                        )
-                      }
+                        );
+                      }}
                       disabled={
                         isAutoBotRunning
                       }
@@ -4858,7 +5055,7 @@ export default function BinarySpotPro() {
                   RESET SESSION
                 </button>
 
-                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
                   <StatusCard
                     label="Bot Status"
                     value={
@@ -4893,6 +5090,20 @@ export default function BinarySpotPro() {
                       recoveryStatus.recovering
                         ? 'text-amber-400'
                         : 'text-emerald-400'
+                    }
+                  />
+
+                  <StatusCard
+                    label="Manual Proposal"
+                    value={
+                      proposalFreshnessStatus.label
+                    }
+                    accent={
+                      proposalFreshnessStatus.fresh
+                        ? 'text-emerald-400'
+                        : proposalFreshnessStatus.expired
+                        ? 'text-rose-400'
+                        : 'text-slate-400'
                     }
                   />
                 </div>
@@ -4984,9 +5195,32 @@ export default function BinarySpotPro() {
                     !recoveryStatus.settled
                   ) && (
                     <div className="border-t border-slate-800 pt-6">
-                      <p className="text-xs uppercase font-black text-slate-500 mb-3">
-                        Manual Demo Test
-                      </p>
+                      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                        <p className="text-xs uppercase font-black text-slate-500">
+                          Manual Demo Test
+                        </p>
+
+                        <span
+                          className={`text-xs font-black ${
+                            proposalFreshnessStatus.fresh
+                              ? 'text-emerald-400'
+                              : proposalFreshnessStatus.expired
+                              ? 'text-rose-400'
+                              : 'text-slate-600'
+                          }`}
+                        >
+                          {
+                            proposalFreshnessStatus.label
+                          }
+                        </span>
+                      </div>
+
+                      {proposalFreshnessStatus.expired && (
+                        <div className="mb-3 border border-rose-800/60 bg-rose-950/20 rounded-xl p-3 text-xs text-rose-300">
+                          This proposal has expired. Request a new
+                          proposal before buying.
+                        </div>
+                      )}
 
                       <div className="grid sm:grid-cols-2 gap-3">
                         <button
@@ -5003,6 +5237,8 @@ export default function BinarySpotPro() {
                         >
                           {proposalLoading
                             ? 'REQUESTING...'
+                            : proposalFreshnessStatus.expired
+                            ? 'GET FRESH PROPOSAL'
                             : 'GET PROPOSAL'}
                         </button>
 
@@ -5013,6 +5249,7 @@ export default function BinarySpotPro() {
                           }
                           disabled={
                             !proposalData ||
+                            !proposalFreshnessStatus.fresh ||
                             buyLoading ||
                             proposalLoading ||
                             !isDemoAccount
@@ -5021,6 +5258,8 @@ export default function BinarySpotPro() {
                         >
                           {buyLoading
                             ? 'BUYING...'
+                            : proposalFreshnessStatus.expired
+                            ? 'PROPOSAL EXPIRED'
                             : 'BUY DEMO CONTRACT'}
                         </button>
                       </div>
