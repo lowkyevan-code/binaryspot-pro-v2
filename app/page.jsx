@@ -34,6 +34,11 @@ import {
   describeLifecycle,
 } from '../lib/tradeLifecycle';
 
+import {
+  normalizeDerivTick,
+  prependDigitToHistory,
+} from '../lib/tickPrecision';
+
 const CLIENT_ID = '34hh45FQkPfMgbgj20uoR';
 
 const REDIRECT_URI =
@@ -88,7 +93,15 @@ export default function BinarySpotPro() {
   const [lastTick, setLastTick] = useState(null);
   const [prevTick, setPrevTick] = useState(null);
 
+  const [formattedTick, setFormattedTick] =
+    useState('Waiting...');
+
   const [lastDigit, setLastDigit] = useState(null);
+
+  const [pipSize, setPipSize] = useState(null);
+
+  const [usedPipSize, setUsedPipSize] =
+    useState(false);
 
   const [digitHistory, setDigitHistory] = useState([]);
 
@@ -117,6 +130,7 @@ export default function BinarySpotPro() {
   // ============================================================
 
   const [baseStake, setBaseStake] = useState('1.00');
+
   const [currentStake, setCurrentStake] =
     useState('1.00');
 
@@ -363,6 +377,7 @@ export default function BinarySpotPro() {
 
   const nextReqId = () => {
     requestIdRef.current += 1;
+
     return requestIdRef.current;
   };
 
@@ -1048,10 +1063,6 @@ export default function BinarySpotPro() {
         return;
       }
 
-      // --------------------------------------------------------
-      // NEXT STAKE
-      // --------------------------------------------------------
-
       if (result.won) {
         const stakeResult =
           calculateNextStake({
@@ -1125,8 +1136,6 @@ export default function BinarySpotPro() {
           'system'
         );
       } else {
-        // DRAW:
-        // Keep current stake unchanged.
         setCurrentStake(
           currentStakeRef.current.toFixed(
             2
@@ -1210,6 +1219,7 @@ export default function BinarySpotPro() {
     (wsUrl) => {
       if (!wsUrl) {
         setIsTradingConnected(false);
+
         return;
       }
 
@@ -1261,18 +1271,14 @@ export default function BinarySpotPro() {
               event.data
             );
 
-          // ====================================================
-          // ERROR
-          // ====================================================
-
           if (data.error) {
             const message =
               data.error.message ||
               'Deriv rejected the request.';
 
             if (
-              data.echo_req
-                ?.proposal === 1
+              data.echo_req?.proposal ===
+              1
             ) {
               proposalPendingRef.current =
                 false;
@@ -1313,10 +1319,6 @@ export default function BinarySpotPro() {
             return;
           }
 
-          // ====================================================
-          // BALANCE
-          // ====================================================
-
           if (
             data.msg_type ===
               'balance' &&
@@ -1338,10 +1340,6 @@ export default function BinarySpotPro() {
               nextCurrency;
           }
 
-          // ====================================================
-          // PROPOSAL
-          // ====================================================
-
           if (
             data.msg_type ===
               'proposal' &&
@@ -1359,8 +1357,8 @@ export default function BinarySpotPro() {
             );
 
             if (
-              lifecycleRef.current
-                ?.mode === 'auto'
+              lifecycleRef.current?.mode ===
+              'auto'
             ) {
               if (
                 emergencyStoppedRef.current ||
@@ -1399,8 +1397,7 @@ export default function BinarySpotPro() {
 
               const askPrice =
                 Number(
-                  data.proposal
-                    .ask_price
+                  data.proposal.ask_price
                 );
 
               if (
@@ -1447,10 +1444,6 @@ export default function BinarySpotPro() {
               'success'
             );
           }
-
-          // ====================================================
-          // BUY
-          // ====================================================
 
           if (
             data.msg_type ===
@@ -1548,10 +1541,6 @@ export default function BinarySpotPro() {
             );
           }
 
-          // ====================================================
-          // OPEN CONTRACT
-          // ====================================================
-
           if (
             data.msg_type ===
               'proposal_open_contract' &&
@@ -1561,8 +1550,7 @@ export default function BinarySpotPro() {
               data.proposal_open_contract;
 
             if (
-              data.subscription
-                ?.id
+              data.subscription?.id
             ) {
               contractSubscriptionRef.current =
                 data.subscription.id;
@@ -1624,9 +1612,7 @@ export default function BinarySpotPro() {
               })
             );
 
-            if (
-              !contract.is_sold
-            ) {
+            if (!contract.is_sold) {
               contractOpenRef.current =
                 true;
 
@@ -1636,10 +1622,6 @@ export default function BinarySpotPro() {
 
               return;
             }
-
-            // ==================================================
-            // SETTLED
-            // ==================================================
 
             contractOpenRef.current =
               false;
@@ -2108,17 +2090,22 @@ export default function BinarySpotPro() {
             data.tick
           ) {
             if (
-              data.subscription
-                ?.id
+              data.subscription?.id
             ) {
               publicSubscriptionRef.current =
                 data.subscription.id;
             }
 
-            const quote =
-              Number(
-                data.tick.quote
+            const normalizedTick =
+              normalizeDerivTick(
+                data.tick
               );
+
+            if (
+              !normalizedTick.valid
+            ) {
+              return;
+            }
 
             setLastTick(
               (previous) => {
@@ -2126,43 +2113,35 @@ export default function BinarySpotPro() {
                   previous
                 );
 
-                return quote;
+                return normalizedTick.quote;
               }
             );
 
-            const text =
-              String(
-                data.tick.quote
-              );
+            setFormattedTick(
+              normalizedTick.formattedQuote ||
+                String(
+                  normalizedTick.quote
+                )
+            );
 
-            const numbers =
-              text.replace(
-                /\D/g,
-                ''
-              );
+            setPipSize(
+              normalizedTick.pipSize
+            );
 
-            if (!numbers.length) {
-              return;
-            }
-
-            const digit =
-              Number(
-                numbers[
-                  numbers.length -
-                    1
-                ]
-              );
+            setUsedPipSize(
+              Boolean(
+                normalizedTick.usedPipSize
+              )
+            );
 
             setLastDigit(
-              digit
+              normalizedTick.lastDigit
             );
 
             const updatedHistory =
-              [
-                digit,
-                ...digitHistoryRef.current,
-              ].slice(
-                0,
+              prependDigitToHistory(
+                digitHistoryRef.current,
+                normalizedTick.lastDigit,
                 100
               );
 
@@ -2507,7 +2486,7 @@ export default function BinarySpotPro() {
     );
 
     addBotLog(
-      `TRADE LIFECYCLE GUARD ACTIVE — ${strategy}`,
+      `PRECISION DIGIT ENGINE ACTIVE — ${strategy}`,
       'system'
     );
 
@@ -2692,8 +2671,8 @@ export default function BinarySpotPro() {
       }
 
       if (
-        lifecycleRef.current
-          ?.mode !== 'manual'
+        lifecycleRef.current?.mode !==
+        'manual'
       ) {
         lifecycleRef.current =
           beginTradeLifecycle({
@@ -2829,16 +2808,11 @@ export default function BinarySpotPro() {
       'DIGITUNDER',
     ].includes(strategy);
 
-  const formattedQuote =
-    lastTick !== null
-      ? lastTick.toLocaleString(
-          'en-US',
-          {
-            maximumFractionDigits:
-              5,
-          }
-        )
-      : 'Waiting...';
+  const displayQuote =
+    formattedTick ||
+    (lastTick !== null
+      ? String(lastTick)
+      : 'Waiting...');
 
   const completedTrades =
     winCount +
@@ -2921,7 +2895,7 @@ export default function BinarySpotPro() {
                   : 'text-rose-400'
               }`}
             >
-              {formattedQuote}
+              {displayQuote}
             </span>
 
             <span className="bg-slate-800 border border-slate-700 px-2 py-1 rounded text-cyan-400 font-black">
@@ -3095,17 +3069,18 @@ export default function BinarySpotPro() {
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Lifecycle Guard Active
+                Precision Digit Feed Active
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Every Automated Contract Stays Accounted For.
+                Strategy Decisions Now Use Normalized Tick Digits.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                An automated contract remains attached to its
-                session until settlement, even when the bot is
-                stopped while that contract is still live.
+                Market quotes are normalized before their final
+                digit enters the analyzer and signal engine.
+                Deriv pip precision is used whenever it is
+                supplied by the tick feed.
               </p>
             </div>
 
@@ -3142,11 +3117,17 @@ export default function BinarySpotPro() {
               />
 
               <StatBox
-                label="Lifecycle"
+                label="Tick Precision"
                 value={
-                  lifecycleLabel
+                  usedPipSize
+                    ? `PIP ${pipSize}`
+                    : 'Fallback'
                 }
-                accent="text-amber-400"
+                accent={
+                  usedPipSize
+                    ? 'text-emerald-400'
+                    : 'text-amber-400'
+                }
               />
             </div>
           </div>
@@ -3165,7 +3146,8 @@ export default function BinarySpotPro() {
 
                 <p className="mt-1 text-xs text-slate-400">
                   Signal-controlled demo automation with
-                  lifecycle and session protection.
+                  precision digit parsing, lifecycle and session
+                  protection.
                 </p>
               </div>
 
@@ -3242,6 +3224,31 @@ export default function BinarySpotPro() {
               <p className="mt-4 text-xs text-slate-400">
                 {signal.reason}
               </p>
+
+              <div className="mt-4 grid grid-cols-3 gap-2">
+                <MiniInfo
+                  label="Quote"
+                  value={
+                    displayQuote
+                  }
+                />
+
+                <MiniInfo
+                  label="Last Digit"
+                  value={
+                    lastDigit ?? '-'
+                  }
+                />
+
+                <MiniInfo
+                  label="Precision"
+                  value={
+                    usedPipSize
+                      ? `pip ${pipSize}`
+                      : 'fallback'
+                  }
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -3267,6 +3274,30 @@ export default function BinarySpotPro() {
 
                         setDigitHistory(
                           []
+                        );
+
+                        setLastDigit(
+                          null
+                        );
+
+                        setLastTick(
+                          null
+                        );
+
+                        setPrevTick(
+                          null
+                        );
+
+                        setFormattedTick(
+                          'Waiting...'
+                        );
+
+                        setPipSize(
+                          null
+                        );
+
+                        setUsedPipSize(
+                          false
                         );
                       }}
                       disabled={
@@ -4139,11 +4170,11 @@ export default function BinarySpotPro() {
                   </h2>
 
                   <p className="text-xs text-slate-400">
-                    {analysis.sampleSize} recent ticks on {symbol}
+                    {analysis.sampleSize} normalized recent ticks on {symbol}
                   </p>
                 </div>
 
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <span className="bg-slate-800 px-3 py-1 rounded text-xs font-black text-cyan-400">
                     Even{' '}
                     {analysis.evenOdd.evenPercentage}
@@ -4154,6 +4185,12 @@ export default function BinarySpotPro() {
                     Odd{' '}
                     {analysis.evenOdd.oddPercentage}
                     %
+                  </span>
+
+                  <span className="bg-slate-800 px-3 py-1 rounded text-xs font-black text-emerald-400">
+                    {usedPipSize
+                      ? `Pip ${pipSize}`
+                      : 'Fallback Precision'}
                   </span>
                 </div>
               </div>
@@ -4185,7 +4222,7 @@ export default function BinarySpotPro() {
               </div>
             </div>
 
-            <div className="grid md:grid-cols-3 gap-4">
+            <div className="grid md:grid-cols-4 gap-4">
               <StatBox
                 label="Most Frequent"
                 value={
@@ -4215,12 +4252,29 @@ export default function BinarySpotPro() {
                 }
                 accent="text-cyan-400"
               />
+
+              <StatBox
+                label="Current Quote"
+                value={
+                  displayQuote
+                }
+                accent="text-cyan-400"
+              />
             </div>
 
             <div className="bg-[#0f1522] border border-slate-800 p-6 rounded-2xl">
-              <p className="text-xs uppercase font-black text-slate-500">
-                Recent Digits
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs uppercase font-black text-slate-500">
+                  Recent Digits
+                </p>
+
+                <p className="text-xs font-mono text-slate-500">
+                  Last digit:{' '}
+                  <span className="text-emerald-400 font-black">
+                    {lastDigit ?? '-'}
+                  </span>
+                </p>
+              </div>
 
               <div className="flex flex-wrap gap-2 mt-4">
                 {digitHistory
@@ -4294,6 +4348,23 @@ function StatBox({
       <p
         className={`mt-1 text-lg font-black font-mono ${accent}`}
       >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function MiniInfo({
+  label,
+  value,
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-[#080b11] p-3">
+      <p className="text-[9px] uppercase text-slate-600">
+        {label}
+      </p>
+
+      <p className="mt-1 text-xs font-black font-mono text-cyan-400 break-all">
         {value}
       </p>
     </div>
