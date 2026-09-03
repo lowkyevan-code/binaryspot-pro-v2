@@ -111,11 +111,27 @@ import {
   createPendingBuyRecovery,
   registerPendingBuy,
   markPendingBuyAmbiguous,
+  beginPendingBuyReconciliation,
   resolvePendingBuyWithContract,
   clearPendingBuyRecovery,
   getPendingBuyRecoveryStatus,
   canOpenAfterPendingBuy,
 } from '../lib/pendingBuyRecovery';
+
+import {
+  BUY_RECONCILIATION_STATE,
+  createPendingBuyReconciliation,
+  buildPortfolioReconciliationRequest,
+  buildProfitTableReconciliationRequest,
+  beginPendingBuyReconciliationSearch,
+  applyPortfolioReconciliationResult,
+  applyProfitTableReconciliationResult,
+  evaluatePendingBuyReconciliation,
+  failPendingBuyReconciliation,
+  getPendingBuyReconciliationStatus,
+  clearPendingBuyReconciliation,
+  validatePendingBuyContext,
+} from '../lib/pendingBuyReconciliation';
 
 const CLIENT_ID =
   '34hh45FQkPfMgbgj20uoR';
@@ -366,6 +382,21 @@ export default function BinarySpotPro() {
   );
 
   const [
+    reconciliationLabel,
+    setReconciliationLabel,
+  ] = useState('Reconciliation idle');
+
+  const [
+    reconciliationReason,
+    setReconciliationReason,
+  ] = useState('');
+
+  const [
+    reconciliationRunning,
+    setReconciliationRunning,
+  ] = useState(false);
+
+  const [
     recoveryBackoffUi,
     setRecoveryBackoffUi,
   ] = useState(
@@ -413,6 +444,23 @@ export default function BinarySpotPro() {
   const pendingBuyRecoveryRef = useRef(
     createPendingBuyRecovery()
   );
+
+  const pendingBuyReconciliationRef =
+    useRef(
+      createPendingBuyReconciliation()
+    );
+
+  const reconciliationRequestRef =
+    useRef({
+      portfolioReqId: null,
+      profitTableReqId: null,
+    });
+
+  const pendingReconciliationRunnerRef =
+    useRef(null);
+
+  const pendingReconciliationFetchRef =
+    useRef(false);
 
   const recoveryTimerRef = useRef(null);
 
@@ -657,6 +705,28 @@ export default function BinarySpotPro() {
         );
 
       setPendingBuyLabel(status.label);
+    }, []);
+
+  const syncPendingBuyReconciliation =
+    useCallback(() => {
+      const status =
+        getPendingBuyReconciliationStatus(
+          pendingBuyReconciliationRef.current
+        );
+
+      setReconciliationLabel(
+        status.label
+      );
+
+      setReconciliationReason(
+        status.error ||
+          status.reason ||
+          ''
+      );
+
+      setReconciliationRunning(
+        status.searching
+      );
     }, []);
 
   const syncPersistedRecovery =
@@ -994,6 +1064,14 @@ export default function BinarySpotPro() {
     );
   };
 
+  const clearReconciliationRequests =
+    useCallback(() => {
+      reconciliationRequestRef.current = {
+        portfolioReqId: null,
+        profitTableReqId: null,
+      };
+    }, []);
+
   const closeTradingSocket =
     useCallback(() => {
       clearRecoveryTimer();
@@ -1032,6 +1110,14 @@ export default function BinarySpotPro() {
       pendingBuyRecoveryRef.current =
         clearPendingBuyRecovery();
 
+      pendingBuyReconciliationRef.current =
+        clearPendingBuyReconciliation();
+
+      pendingReconciliationFetchRef.current =
+        false;
+
+      clearReconciliationRequests();
+
       setProposalLoading(false);
       setBuyLoading(false);
 
@@ -1040,12 +1126,15 @@ export default function BinarySpotPro() {
       );
 
       syncPendingBuyRecovery();
+      syncPendingBuyReconciliation();
 
       setIsTradingConnected(false);
     },
     [
       clearRecoveryTimer,
+      clearReconciliationRequests,
       syncPendingBuyRecovery,
+      syncPendingBuyReconciliation,
     ]
   );
 
@@ -1076,9 +1165,7 @@ export default function BinarySpotPro() {
               );
 
         if (
-          !Number.isFinite(
-            parsedStake
-          ) ||
+          !Number.isFinite(parsedStake) ||
           parsedStake <= 0
         ) {
           throw new Error(
@@ -1547,7 +1634,8 @@ export default function BinarySpotPro() {
         setTradeHistory(
           (previous) => [
             {
-              id: contract.contract_id,
+              id:
+                contract.contract_id,
               result: result.result,
               profit: result.profit,
               stake: tradeStake,
@@ -1723,6 +1811,472 @@ export default function BinarySpotPro() {
       ]
     );
 
+  const finalizePendingBuyReconciliation =
+    useCallback(
+      (ws) => {
+        const evaluated =
+          evaluatePendingBuyReconciliation(
+            pendingBuyReconciliationRef.current
+          );
+
+        pendingBuyReconciliationRef.current =
+          evaluated;
+
+        syncPendingBuyReconciliation();
+
+        if (
+          evaluated.state ===
+          BUY_RECONCILIATION_STATE.SEARCHING
+        ) {
+          return;
+        }
+
+        pendingReconciliationFetchRef.current =
+          false;
+
+        const pendingStatus =
+          getPendingBuyRecoveryStatus(
+            pendingBuyRecoveryRef.current
+          );
+
+        if (
+          evaluated.state ===
+          BUY_RECONCILIATION_STATE.OPEN_CONTRACT_FOUND
+        ) {
+          const candidate =
+            evaluated.selectedCandidate;
+
+          const contractId =
+            candidate?.contractId;
+
+          if (!contractId) {
+            setBuyError(
+              'Reconciliation found an open position but no usable contract ID. Trading remains frozen.'
+            );
+            return;
+          }
+
+          const resolved =
+            resolvePendingBuyWithContract(
+              pendingBuyRecoveryRef.current,
+              contractId
+            );
+
+          if (!resolved.valid) {
+            setBuyError(
+              resolved.reason ||
+                'Unable to resolve the uncertain BUY.'
+            );
+            return;
+          }
+
+          pendingBuyRecoveryRef.current =
+            resolved.recovery;
+
+          const owner =
+            pendingStatus.owner ===
+            'auto'
+              ? 'auto'
+              : 'manual';
+
+          lifecycleRef.current =
+            beginTradeLifecycle({
+              mode: owner,
+            });
+
+          lifecycleRef.current =
+            attachContractToLifecycle(
+              lifecycleRef.current,
+              contractId
+            );
+
+          const recoveryRegistration =
+            registerLiveContract(
+              createContractRecovery(),
+              {
+                contractId,
+                accountId:
+                  accountIdRef.current,
+                owner,
+              }
+            );
+
+          if (
+            !recoveryRegistration.valid
+          ) {
+            setBuyError(
+              recoveryRegistration.reason ||
+                'Unable to register the recovered contract.'
+            );
+            return;
+          }
+
+          recoveryRef.current =
+            recoveryRegistration.recovery;
+
+          recoveryBackoffRef.current =
+            resetRecoveryBackoff(
+              recoveryBackoffRef.current
+            );
+
+          contractOpenRef.current = true;
+          buyPendingRef.current = false;
+
+          setBuyLoading(false);
+          setBuyError('');
+
+          setActiveContract({
+            contractId,
+            buyPrice:
+              candidate.buyPrice ??
+              pendingStatus.expectedStake ??
+              null,
+            transactionId:
+              candidate.transactionId ||
+              null,
+            isSold: false,
+          });
+
+          setContractProfit(0);
+
+          setContractStatus(
+            'RECONCILED — LIVE'
+          );
+
+          setAutoBotStatus(
+            `Recovered Contract #${contractId}`
+          );
+
+          if (
+            accountTypeRef.current ===
+            'demo'
+          ) {
+            persistLiveContractRecovery({
+              contractId,
+              accountId:
+                accountIdRef.current,
+              accountType:
+                accountTypeRef.current,
+              owner,
+              symbol:
+                candidate.symbol ||
+                pendingStatus.symbol ||
+                symbolRef.current,
+              createdAt:
+                pendingStatus.startedAt ||
+                Date.now(),
+            });
+          }
+
+          pendingBuyRecoveryRef.current =
+            clearPendingBuyRecovery();
+
+          requestGuardRef.current =
+            resetRequestGuard();
+
+          syncRequestStatus();
+          syncPendingBuyRecovery();
+          syncLifecycleLabel();
+          syncRecoveryLabel();
+          syncRecoveryBackoff();
+          syncPersistedRecovery();
+
+          addBotLog(
+            `BUY reconciliation recovered live contract #${contractId}. Automated trading remains stopped.`,
+            'success'
+          );
+
+          if (
+            ws &&
+            ws.readyState ===
+              WebSocket.OPEN
+          ) {
+            ws.send(
+              JSON.stringify({
+                proposal_open_contract:
+                  1,
+                contract_id:
+                  contractId,
+                subscribe: 1,
+                req_id:
+                  nextReqId(),
+              })
+            );
+          }
+
+          return;
+        }
+
+        if (
+          evaluated.state ===
+          BUY_RECONCILIATION_STATE.SETTLED_CONTRACT_FOUND
+        ) {
+          const candidate =
+            evaluated.selectedCandidate;
+
+          if (!candidate?.contractId) {
+            setBuyError(
+              'A possible settled BUY was found, but it has no usable contract ID. BinarySpot will not automatically clear the ambiguity.'
+            );
+
+            addBotLog(
+              'Reconciliation found a historical transaction without a usable contract ID. Manual review required.',
+              'error'
+            );
+
+            return;
+          }
+
+          const resolved =
+            resolvePendingBuyWithContract(
+              pendingBuyRecoveryRef.current,
+              candidate.contractId
+            );
+
+          if (!resolved.valid) {
+            setBuyError(
+              resolved.reason ||
+                'Unable to resolve the settled BUY.'
+            );
+            return;
+          }
+
+          const profit =
+            Number(
+              candidate.profit ?? 0
+            );
+
+          const safeProfit =
+            Number.isFinite(profit)
+              ? profit
+              : 0;
+
+          const result =
+            classifyTradeResult(
+              safeProfit
+            );
+
+          const owner =
+            pendingStatus.owner ===
+            'auto'
+              ? 'auto'
+              : 'manual';
+
+          const tradeStake =
+            Number(
+              candidate.buyPrice ??
+                pendingStatus.expectedStake ??
+                0
+            );
+
+          tradeCountRef.current += 1;
+
+          setTradeCount(
+            tradeCountRef.current
+          );
+
+          totalProfitRef.current =
+            Number(
+              (
+                totalProfitRef.current +
+                safeProfit
+              ).toFixed(2)
+            );
+
+          setTotalProfit(
+            totalProfitRef.current
+          );
+
+          if (result.won) {
+            setWinCount(
+              (value) => value + 1
+            );
+
+            consecutiveLossesRef.current =
+              0;
+
+            setConsecutiveLosses(0);
+          } else if (result.lost) {
+            setLossCount(
+              (value) => value + 1
+            );
+
+            consecutiveLossesRef.current +=
+              1;
+
+            setConsecutiveLosses(
+              consecutiveLossesRef.current
+            );
+          } else {
+            setDrawCount(
+              (value) => value + 1
+            );
+          }
+
+          setTradeHistory(
+            (previous) => [
+              {
+                id:
+                  candidate.contractId,
+                result:
+                  result.result,
+                profit:
+                  result.profit,
+                stake:
+                  Number.isFinite(
+                    tradeStake
+                  )
+                    ? tradeStake
+                    : 0,
+                strategy:
+                  candidate.contractType ||
+                  pendingStatus.strategy ||
+                  strategyRef.current,
+                symbol:
+                  candidate.symbol ||
+                  pendingStatus.symbol ||
+                  symbolRef.current,
+                time:
+                  new Date().toLocaleTimeString(),
+                recovered: true,
+              },
+              ...previous.slice(0, 49),
+            ]
+          );
+
+          lifecycleRef.current =
+            beginTradeLifecycle({
+              mode: owner,
+            });
+
+          lifecycleRef.current =
+            attachContractToLifecycle(
+              lifecycleRef.current,
+              candidate.contractId
+            );
+
+          lifecycleRef.current =
+            markLifecycleSettled(
+              lifecycleRef.current,
+              candidate.contractId
+            );
+
+          pendingBuyRecoveryRef.current =
+            clearPendingBuyRecovery();
+
+          pendingBuyReconciliationRef.current =
+            evaluated;
+
+          requestGuardRef.current =
+            resetRequestGuard();
+
+          buyPendingRef.current = false;
+          contractOpenRef.current = false;
+
+          clearContractRecoveryRecord();
+
+          setBuyLoading(false);
+          setBuyError('');
+          setActiveContract({
+            contractId:
+              candidate.contractId,
+            buyPrice:
+              candidate.buyPrice,
+            transactionId:
+              candidate.transactionId ||
+              null,
+            isSold: true,
+            status:
+              result.result,
+          });
+
+          setContractProfit(
+            safeProfit
+          );
+
+          setContractStatus(
+            `RECONCILED — ${String(
+              result.result
+            ).toUpperCase()}`
+          );
+
+          setAutoBotStatus(
+            'Reconciled settled BUY — bot remains stopped'
+          );
+
+          syncRequestStatus();
+          syncPendingBuyRecovery();
+          syncLifecycleLabel();
+          syncPersistedRecovery();
+
+          addBotLog(
+            `BUY reconciliation found settled contract #${candidate.contractId} | ${
+              safeProfit >= 0
+                ? '+'
+                : ''
+            }${safeProfit.toFixed(
+              2
+            )}`,
+            result.won
+              ? 'success'
+              : result.lost
+              ? 'error'
+              : 'system'
+          );
+
+          return;
+        }
+
+        if (
+          evaluated.state ===
+          BUY_RECONCILIATION_STATE.NO_MATCH
+        ) {
+          setBuyError(
+            'No sufficiently strong BUY match was found. Trading remains frozen so BinarySpot does not accidentally duplicate a position.'
+          );
+
+          setAutoBotStatus(
+            'BUY reconciliation unresolved'
+          );
+
+          addBotLog(
+            'BUY reconciliation completed with no safe match. New entries remain blocked.',
+            'error'
+          );
+
+          return;
+        }
+
+        if (
+          evaluated.state ===
+          BUY_RECONCILIATION_STATE.AMBIGUOUS
+        ) {
+          setBuyError(
+            'Multiple possible BUY matches were found. BinarySpot will not guess which contract belongs to this purchase.'
+          );
+
+          setAutoBotStatus(
+            'Multiple BUY matches — review required'
+          );
+
+          addBotLog(
+            'BUY reconciliation found multiple plausible contracts. New entries remain blocked.',
+            'error'
+          );
+        }
+      },
+      [
+        addBotLog,
+        syncLifecycleLabel,
+        syncPendingBuyReconciliation,
+        syncPendingBuyRecovery,
+        syncPersistedRecovery,
+        syncRecoveryBackoff,
+        syncRecoveryLabel,
+        syncRequestStatus,
+      ]
+    );
+
   const connectTradingSocket =
     useCallback(
       (wsUrl) => {
@@ -1781,6 +2335,116 @@ export default function BinarySpotPro() {
               req_id: nextReqId(),
             })
           );
+
+          const pendingStatus =
+            getPendingBuyRecoveryStatus(
+              pendingBuyRecoveryRef.current
+            );
+
+          const reconciliationStatus =
+            getPendingBuyReconciliationStatus(
+              pendingBuyReconciliationRef.current
+            );
+
+          if (
+            pendingStatus.ambiguous &&
+            reconciliationStatus.searching
+          ) {
+            const contextValidation =
+              validatePendingBuyContext(
+                pendingBuyRecoveryRef.current,
+                {
+                  accountId:
+                    accountIdRef.current,
+                  accountType:
+                    accountTypeRef.current,
+                }
+              );
+
+            if (
+              !contextValidation.valid
+            ) {
+              pendingBuyReconciliationRef.current =
+                failPendingBuyReconciliation(
+                  pendingBuyReconciliationRef.current,
+                  contextValidation.reason
+                );
+
+              pendingReconciliationFetchRef.current =
+                false;
+
+              syncPendingBuyReconciliation();
+
+              setBuyError(
+                contextValidation.reason
+              );
+            } else {
+              const portfolioReqId =
+                nextReqId();
+
+              const profitTableReqId =
+                nextReqId();
+
+              const portfolioRequest =
+                buildPortfolioReconciliationRequest(
+                  portfolioReqId
+                );
+
+              const profitRequest =
+                buildProfitTableReconciliationRequest(
+                  profitTableReqId,
+                  {
+                    limit: 100,
+                  }
+                );
+
+              if (
+                !portfolioRequest.valid ||
+                !profitRequest.valid
+              ) {
+                const message =
+                  portfolioRequest.reason ||
+                  profitRequest.reason ||
+                  'Unable to build reconciliation requests.';
+
+                pendingBuyReconciliationRef.current =
+                  failPendingBuyReconciliation(
+                    pendingBuyReconciliationRef.current,
+                    message
+                  );
+
+                pendingReconciliationFetchRef.current =
+                  false;
+
+                syncPendingBuyReconciliation();
+
+                setBuyError(message);
+              } else {
+                reconciliationRequestRef.current =
+                  {
+                    portfolioReqId,
+                    profitTableReqId,
+                  };
+
+                addBotLog(
+                  `Checking Deriv portfolio and recent trade history for BUY #${pendingStatus.reqId}.`,
+                  'system'
+                );
+
+                ws.send(
+                  JSON.stringify(
+                    portfolioRequest.payload
+                  )
+                );
+
+                ws.send(
+                  JSON.stringify(
+                    profitRequest.payload
+                  )
+                );
+              }
+            }
+          }
 
           const recoveryStatus =
             getContractRecoveryStatus(
@@ -1864,10 +2528,53 @@ export default function BinarySpotPro() {
             const data =
               JSON.parse(event.data);
 
+            const reconciliationRequests =
+              reconciliationRequestRef.current;
+
+            const isReconciliationPortfolio =
+              data.req_id ===
+              reconciliationRequests.portfolioReqId;
+
+            const isReconciliationProfitTable =
+              data.req_id ===
+              reconciliationRequests.profitTableReqId;
+
             if (data.error) {
               const message =
                 data.error.message ||
                 'Deriv rejected the request.';
+
+              if (
+                isReconciliationPortfolio ||
+                isReconciliationProfitTable
+              ) {
+                pendingBuyReconciliationRef.current =
+                  failPendingBuyReconciliation(
+                    pendingBuyReconciliationRef.current,
+                    message
+                  );
+
+                pendingReconciliationFetchRef.current =
+                  false;
+
+                clearReconciliationRequests();
+                syncPendingBuyReconciliation();
+
+                setBuyError(
+                  `BUY reconciliation failed: ${message}`
+                );
+
+                setAutoBotStatus(
+                  'BUY reconciliation error'
+                );
+
+                addBotLog(
+                  `BUY reconciliation error: ${message}`,
+                  'error'
+                );
+
+                return;
+              }
 
               let matchedProposal =
                 false;
@@ -1951,7 +2658,11 @@ export default function BinarySpotPro() {
                   pendingBuyRecoveryRef.current =
                     clearPendingBuyRecovery();
 
+                  pendingBuyReconciliationRef.current =
+                    clearPendingBuyReconciliation();
+
                   syncPendingBuyRecovery();
+                  syncPendingBuyReconciliation();
                   syncRequestStatus();
                 }
               }
@@ -2047,6 +2758,63 @@ export default function BinarySpotPro() {
               ) {
                 stopAutoBot(message);
               }
+
+              return;
+            }
+
+            if (
+              isReconciliationPortfolio
+            ) {
+              const contracts =
+                data.portfolio?.contracts ??
+                data.portfolio ??
+                [];
+
+              pendingBuyReconciliationRef.current =
+                applyPortfolioReconciliationResult(
+                  pendingBuyReconciliationRef.current,
+                  pendingBuyRecoveryRef.current,
+                  Array.isArray(
+                    contracts
+                  )
+                    ? contracts
+                    : []
+                );
+
+              syncPendingBuyReconciliation();
+
+              finalizePendingBuyReconciliation(
+                ws
+              );
+
+              return;
+            }
+
+            if (
+              isReconciliationProfitTable
+            ) {
+              const transactions =
+                data.profit_table
+                  ?.transactions ??
+                data.profit_table ??
+                [];
+
+              pendingBuyReconciliationRef.current =
+                applyProfitTableReconciliationResult(
+                  pendingBuyReconciliationRef.current,
+                  pendingBuyRecoveryRef.current,
+                  Array.isArray(
+                    transactions
+                  )
+                    ? transactions
+                    : []
+                );
+
+              syncPendingBuyReconciliation();
+
+              finalizePendingBuyReconciliation(
+                ws
+              );
 
               return;
             }
@@ -2224,8 +2992,12 @@ export default function BinarySpotPro() {
                 pendingBuyRecoveryRef.current =
                   pendingRegistration.recovery;
 
+                pendingBuyReconciliationRef.current =
+                  clearPendingBuyReconciliation();
+
                 syncRequestStatus();
                 syncPendingBuyRecovery();
+                syncPendingBuyReconciliation();
 
                 buyPendingRef.current =
                   true;
@@ -2344,6 +3116,10 @@ export default function BinarySpotPro() {
                   );
                 }
 
+                setTimeout(() => {
+                  pendingReconciliationRunnerRef.current?.();
+                }, 500);
+
                 return;
               }
 
@@ -2456,7 +3232,11 @@ export default function BinarySpotPro() {
               pendingBuyRecoveryRef.current =
                 clearPendingBuyRecovery();
 
+              pendingBuyReconciliationRef.current =
+                clearPendingBuyReconciliation();
+
               syncPendingBuyRecovery();
+              syncPendingBuyReconciliation();
 
               contractOpenRef.current =
                 true;
@@ -2739,7 +3519,16 @@ export default function BinarySpotPro() {
               requestGuardRef.current
             );
 
-          if (requestStatus.buyPending) {
+          const pendingStatus =
+            getPendingBuyRecoveryStatus(
+              pendingBuyRecoveryRef.current
+            );
+
+          if (
+            requestStatus.buyPending ||
+            pendingStatus.state ===
+              'pending'
+          ) {
             pendingBuyRecoveryRef.current =
               markPendingBuyAmbiguous(
                 pendingBuyRecoveryRef.current
@@ -2754,11 +3543,15 @@ export default function BinarySpotPro() {
             );
 
             setBuyError(
-              'Connection was lost after a BUY was sent. BinarySpot will not open another contract until this purchase is reconciled.'
+              'Connection was lost after a BUY was sent. BinarySpot is checking the same demo account before allowing another purchase.'
             );
 
             addBotLog(
-              `BUY #${requestStatus.buyReqId} became ambiguous after WebSocket disconnect. New trading is frozen.`,
+              `BUY #${
+                requestStatus.buyReqId ||
+                pendingStatus.reqId ||
+                '?'
+              } became ambiguous after WebSocket disconnect. Reconciliation queued.`,
               'error'
             );
 
@@ -2768,6 +3561,36 @@ export default function BinarySpotPro() {
               stopAutoBot(
                 'BUY outcome unknown after socket disconnect.'
               );
+            }
+
+            setTimeout(() => {
+              pendingReconciliationRunnerRef.current?.();
+            }, 750);
+
+            return;
+          }
+
+          if (
+            pendingStatus.ambiguous
+          ) {
+            pendingReconciliationFetchRef.current =
+              false;
+
+            const reconciliationStatus =
+              getPendingBuyReconciliationStatus(
+                pendingBuyReconciliationRef.current
+              );
+
+            if (
+              reconciliationStatus.searching
+            ) {
+              pendingBuyReconciliationRef.current =
+                failPendingBuyReconciliation(
+                  pendingBuyReconciliationRef.current,
+                  'Reconciliation socket closed before both account-history checks completed.'
+                );
+
+              syncPendingBuyReconciliation();
             }
 
             return;
@@ -2840,11 +3663,14 @@ export default function BinarySpotPro() {
         addBotLog,
         clearManualProposal,
         clearRecoveryTimer,
+        clearReconciliationRequests,
+        finalizePendingBuyReconciliation,
         handleAutoSettlement,
         queueContractRecovery,
         registerRecoveryFailure,
         stopAutoBot,
         syncLifecycleLabel,
+        syncPendingBuyReconciliation,
         syncPendingBuyRecovery,
         syncPersistedRecovery,
         syncRecoveryBackoff,
@@ -2855,6 +3681,178 @@ export default function BinarySpotPro() {
 
   connectTradingSocketRef.current =
     connectTradingSocket;
+
+  pendingReconciliationRunnerRef.current =
+    async () => {
+      const pendingStatus =
+        getPendingBuyRecoveryStatus(
+          pendingBuyRecoveryRef.current
+        );
+
+      if (!pendingStatus.ambiguous) {
+        return;
+      }
+
+      if (
+        pendingReconciliationFetchRef.current
+      ) {
+        return;
+      }
+
+      if (
+        pendingStatus.accountType !==
+        'demo'
+      ) {
+        setBuyError(
+          'Pending BUY reconciliation is restricted to demo accounts.'
+        );
+        return;
+      }
+
+      if (
+        !pendingStatus.accountId
+      ) {
+        setBuyError(
+          'The uncertain BUY has no account identity.'
+        );
+        return;
+      }
+
+      const validation =
+        validatePendingBuyContext(
+          pendingBuyRecoveryRef.current,
+          {
+            accountId:
+              accountIdRef.current,
+            accountType:
+              accountTypeRef.current,
+          }
+        );
+
+      if (!validation.valid) {
+        setBuyError(
+          validation.reason
+        );
+        return;
+      }
+
+      pendingReconciliationFetchRef.current =
+        true;
+
+      const reconciliationStart =
+        beginPendingBuyReconciliation(
+          pendingBuyRecoveryRef.current
+        );
+
+      pendingBuyRecoveryRef.current =
+        reconciliationStart;
+
+      pendingBuyReconciliationRef.current =
+        beginPendingBuyReconciliationSearch(
+          clearPendingBuyReconciliation()
+        );
+
+      clearReconciliationRequests();
+
+      syncPendingBuyRecovery();
+      syncPendingBuyReconciliation();
+
+      setBuyError('');
+      setAutoBotStatus(
+        'Reconciling uncertain BUY'
+      );
+
+      addBotLog(
+        `Starting BUY reconciliation for request #${pendingStatus.reqId}.`,
+        'system'
+      );
+
+      try {
+        const response = await fetch(
+          `/api/auth/deriv/session?account_id=${encodeURIComponent(
+            pendingStatus.accountId
+          )}`,
+          {
+            method: 'GET',
+            credentials: 'include',
+            cache: 'no-store',
+          }
+        );
+
+        const data =
+          await response.json();
+
+        if (
+          !response.ok ||
+          !data.authenticated
+        ) {
+          throw new Error(
+            data.error ||
+              'Unable to create a fresh reconciliation session.'
+          );
+        }
+
+        if (
+          !data.account ||
+          data.account.id !==
+            pendingStatus.accountId
+        ) {
+          throw new Error(
+            'Reconciliation returned the wrong Deriv account.'
+          );
+        }
+
+        if (
+          data.account.type !==
+          'demo'
+        ) {
+          throw new Error(
+            'BUY reconciliation is restricted to demo accounts.'
+          );
+        }
+
+        if (!data.wsUrl) {
+          throw new Error(
+            'Deriv did not return a fresh authenticated WebSocket URL.'
+          );
+        }
+
+        connectTradingSocketRef.current?.(
+          data.wsUrl
+        );
+      } catch (error) {
+        pendingReconciliationFetchRef.current =
+          false;
+
+        pendingBuyReconciliationRef.current =
+          failPendingBuyReconciliation(
+            pendingBuyReconciliationRef.current,
+            error.message ||
+              'Unable to reconcile the uncertain BUY.'
+          );
+
+        syncPendingBuyReconciliation();
+
+        setBuyError(
+          `BUY reconciliation failed: ${
+            error.message ||
+            'Unknown error'
+          }`
+        );
+
+        setAutoBotStatus(
+          'BUY reconciliation error'
+        );
+
+        addBotLog(
+          `BUY reconciliation failed: ${
+            error.message ||
+            'Unknown error'
+          }`,
+          'error'
+        );
+      }
+    };
 
   recoveryRunnerRef.current =
     async () => {
@@ -3005,6 +4003,30 @@ export default function BinarySpotPro() {
     queueContractRecovery(0);
   };
 
+  const retryPendingBuyReconciliation =
+    () => {
+      const pendingStatus =
+        getPendingBuyRecoveryStatus(
+          pendingBuyRecoveryRef.current
+        );
+
+      if (!pendingStatus.ambiguous) {
+        return;
+      }
+
+      pendingReconciliationFetchRef.current =
+        false;
+
+      pendingBuyReconciliationRef.current =
+        clearPendingBuyReconciliation();
+
+      clearReconciliationRequests();
+
+      syncPendingBuyReconciliation();
+
+      pendingReconciliationRunnerRef.current?.();
+    };
+
   const loadDerivSession =
     useCallback(
       async (
@@ -3126,6 +4148,14 @@ export default function BinarySpotPro() {
           pendingBuyRecoveryRef.current =
             clearPendingBuyRecovery();
 
+          pendingBuyReconciliationRef.current =
+            clearPendingBuyReconciliation();
+
+          pendingReconciliationFetchRef.current =
+            false;
+
+          clearReconciliationRequests();
+
           recoveryRef.current =
             clearContractRecovery();
 
@@ -3145,6 +4175,7 @@ export default function BinarySpotPro() {
           syncLifecycleLabel();
           syncRequestStatus();
           syncPendingBuyRecovery();
+          syncPendingBuyReconciliation();
           syncRecoveryBackoff();
 
           setSocketErrorLabel(
@@ -3288,9 +4319,11 @@ export default function BinarySpotPro() {
       [
         addBotLog,
         clearRecoveryTimer,
+        clearReconciliationRequests,
         closeTradingSocket,
         connectTradingSocket,
         syncLifecycleLabel,
+        syncPendingBuyReconciliation,
         syncPendingBuyRecovery,
         syncPersistedRecovery,
         syncRecoveryBackoff,
@@ -3330,6 +4363,7 @@ export default function BinarySpotPro() {
 
     syncPersistedRecovery();
     syncPendingBuyRecovery();
+    syncPendingBuyReconciliation();
 
     loadDerivSession();
 
@@ -3341,6 +4375,7 @@ export default function BinarySpotPro() {
     clearRecoveryTimer,
     closeTradingSocket,
     loadDerivSession,
+    syncPendingBuyReconciliation,
     syncPendingBuyRecovery,
     syncPersistedRecovery,
   ]);
@@ -3800,6 +4835,11 @@ export default function BinarySpotPro() {
     pendingBuyRecoveryRef.current =
       clearPendingBuyRecovery();
 
+    pendingBuyReconciliationRef.current =
+      clearPendingBuyReconciliation();
+
+    clearReconciliationRequests();
+
     recoveryBackoffRef.current =
       resetRecoveryBackoff(
         recoveryBackoffRef.current
@@ -3808,6 +4848,7 @@ export default function BinarySpotPro() {
     syncLifecycleLabel();
     syncRecoveryLabel();
     syncPendingBuyRecovery();
+    syncPendingBuyReconciliation();
     syncRecoveryBackoff();
     syncRequestStatus();
 
@@ -4152,8 +5193,12 @@ export default function BinarySpotPro() {
     pendingBuyRecoveryRef.current =
       pendingRegistration.recovery;
 
+    pendingBuyReconciliationRef.current =
+      clearPendingBuyReconciliation();
+
     syncRequestStatus();
     syncPendingBuyRecovery();
+    syncPendingBuyReconciliation();
 
     buyPendingRef.current = true;
 
@@ -4279,6 +5324,11 @@ export default function BinarySpotPro() {
     pendingBuyRecoveryRef.current =
       clearPendingBuyRecovery();
 
+    pendingBuyReconciliationRef.current =
+      clearPendingBuyReconciliation();
+
+    clearReconciliationRequests();
+
     recoveryRef.current =
       clearContractRecovery();
 
@@ -4296,6 +5346,7 @@ export default function BinarySpotPro() {
     syncLifecycleLabel();
     syncRequestStatus();
     syncPendingBuyRecovery();
+    syncPendingBuyReconciliation();
     syncRecoveryLabel();
     syncRecoveryBackoff();
 
@@ -4334,6 +5385,11 @@ export default function BinarySpotPro() {
   const pendingBuyStatus =
     getPendingBuyRecoveryStatus(
       pendingBuyRecoveryRef.current
+    );
+
+  const reconciliationStatus =
+    getPendingBuyReconciliationStatus(
+      pendingBuyReconciliationRef.current
     );
 
   const needsPredictionDigit =
@@ -4539,10 +5595,40 @@ export default function BinarySpotPro() {
             </p>
 
             <p className="mt-2 text-xs text-slate-400">
-              New contracts are blocked.
-              BinarySpot will not assume
-              that the purchase failed.
+              New contracts remain blocked
+              while BinarySpot checks the
+              same demo account for the
+              missing purchase.
             </p>
+
+            <div className="mt-4 rounded-xl border border-slate-800 bg-black/20 p-3">
+              <p className="text-xs font-black text-cyan-300">
+                {reconciliationLabel}
+              </p>
+
+              {reconciliationReason && (
+                <p className="mt-1 text-xs text-slate-400">
+                  {
+                    reconciliationReason
+                  }
+                </p>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={
+                retryPendingBuyReconciliation
+              }
+              disabled={
+                reconciliationRunning
+              }
+              className="mt-4 px-4 py-3 bg-cyan-500 disabled:opacity-40 text-black text-xs font-black rounded-xl"
+            >
+              {reconciliationRunning
+                ? 'RECONCILING...'
+                : 'RETRY BUY RECONCILIATION'}
+            </button>
           </div>
         )}
 
@@ -4551,21 +5637,20 @@ export default function BinarySpotPro() {
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Pending BUY Guard Active
+                BUY Reconciliation Active
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Unknown Purchase States Can No Longer Trigger Duplicate Entries.
+                Unknown Purchases Are Checked Before Another Entry Is Allowed.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                If the authenticated socket
-                disappears after BUY is sent
-                but before Deriv returns the
-                contract ID, BinarySpot
-                freezes new trading instead
-                of assuming the purchase
-                failed.
+                BinarySpot checks both open
+                positions and recent settled
+                demo trades when a BUY
+                response is lost. It only
+                restores a position when the
+                match is sufficiently strong.
               </p>
             </div>
 
@@ -4587,6 +5672,22 @@ export default function BinarySpotPro() {
                   pendingBuyStatus.ambiguous
                     ? 'text-rose-400'
                     : pendingBuyStatus.blocking
+                    ? 'text-amber-400'
+                    : 'text-emerald-400'
+                }
+              />
+
+              <StatBox
+                label="BUY Reconciliation"
+                value={
+                  reconciliationLabel
+                }
+                accent={
+                  reconciliationStatus.ambiguous ||
+                  reconciliationStatus.failed ||
+                  reconciliationStatus.noMatch
+                    ? 'text-rose-400'
+                    : reconciliationStatus.searching
                     ? 'text-amber-400'
                     : 'text-emerald-400'
                 }
@@ -4931,6 +6032,9 @@ export default function BinarySpotPro() {
                         #{trade.id} —{' '}
                         {trade.result} —{' '}
                         {trade.profit}
+                        {trade.recovered
+                          ? ' — RECOVERED'
+                          : ''}
                       </p>
                     </div>
                   )
