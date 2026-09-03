@@ -11,6 +11,11 @@ import {
   evaluateEntrySignal,
   buildDigitAnalysis,
   getSuggestedDigit,
+  getExecutionFromSignal,
+  getConfidenceLabel,
+  getStrategyLibrary,
+  getStrategyById,
+  isAdvancedStrategy,
 } from '../lib/strategyEngine';
 
 import {
@@ -159,7 +164,26 @@ const PUBLIC_WS_URL =
   'wss://api.derivws.com/trading/v1/options/ws/public';
 
 const INPUT_CLASS =
-  'w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm text-slate-100 font-mono disabled:opacity-50';
+  'w-full mt-2 bg-[#111827] border border-slate-700 p-3 rounded-xl text-sm text-slate-100 font-mono outline-none focus:border-emerald-500 disabled:opacity-50';
+
+const strategyLibrary =
+  getStrategyLibrary();
+
+const nativeStrategies = [
+  'DIGITDIFF',
+  'DIGITMATCH',
+  'DIGITEVEN',
+  'DIGITODD',
+  'DIGITOVER',
+  'DIGITUNDER',
+];
+
+const barrierContracts = [
+  'DIGITDIFF',
+  'DIGITMATCH',
+  'DIGITOVER',
+  'DIGITUNDER',
+];
 
 export default function BinarySpotPro() {
   const [isLoading, setIsLoading] =
@@ -250,13 +274,17 @@ export default function BinarySpotPro() {
   const [
     minimumConfidence,
     setMinimumConfidence,
-  ] = useState('60');
+  ] = useState('62');
 
   const [signal, setSignal] = useState({
     shouldTrade: false,
+    strategyId: 'DIGITDIFF',
     confidence: 0,
+    contractType: 'DIGITDIFF',
+    predictionDigit: 0,
     reason: 'Waiting for market data.',
     sampleSize: 0,
+    metrics: {},
   });
 
   const [baseStake, setBaseStake] =
@@ -536,7 +564,7 @@ export default function BinarySpotPro() {
     useRef('0');
 
   const minimumConfidenceRef =
-    useRef(60);
+    useRef(62);
 
   const baseStakeRef = useRef(1);
   const currentStakeRef = useRef(1);
@@ -896,7 +924,6 @@ export default function BinarySpotPro() {
         accountId,
         accountType,
         currency,
-
         symbol,
         strategy,
         predictionDigit,
@@ -944,7 +971,6 @@ export default function BinarySpotPro() {
         lossCount,
         drawCount,
         consecutiveLosses,
-
         tradeHistory,
 
         botWasRunning:
@@ -1318,11 +1344,21 @@ export default function BinarySpotPro() {
     [clearRecoveryTimer]
   );
 
+  /*
+   * IMPORTANT:
+   *
+   * strategyRef is BinarySpot's strategy.
+   * executionSignal.contractType is the actual
+   * contract sent to Deriv.
+   *
+   * Advanced strategy IDs are NEVER sent as
+   * contract_type.
+   */
   const buildProposalPayload =
     useCallback(
       (
         stakeAmount,
-        signalPrediction = null
+        executionSignal = null
       ) => {
         const parsedStake =
           Number(stakeAmount);
@@ -1336,13 +1372,59 @@ export default function BinarySpotPro() {
         const currentSymbol =
           symbolRef.current;
 
-        const prediction =
-          signalPrediction !== null &&
-          signalPrediction !== undefined
-            ? Number(signalPrediction)
-            : Number(
-                predictionDigitRef.current
+        let contractType =
+          currentStrategy;
+
+        let prediction =
+          Number(
+            predictionDigitRef.current
+          );
+
+        if (executionSignal) {
+          const execution =
+            getExecutionFromSignal(
+              executionSignal
+            );
+
+          if (!execution.valid) {
+            throw new Error(
+              execution.reason
+            );
+          }
+
+          contractType =
+            execution.contractType;
+
+          if (
+            execution.predictionDigit !==
+              null &&
+            execution.predictionDigit !==
+              undefined
+          ) {
+            prediction =
+              Number(
+                execution.predictionDigit
               );
+          }
+        } else if (
+          !nativeStrategies.includes(
+            currentStrategy
+          )
+        ) {
+          throw new Error(
+            'This advanced strategy requires a qualified execution signal before requesting a Deriv proposal.'
+          );
+        }
+
+        if (
+          !nativeStrategies.includes(
+            contractType
+          )
+        ) {
+          throw new Error(
+            'Unsupported Deriv execution contract.'
+          );
+        }
 
         if (
           !Number.isFinite(parsedStake) ||
@@ -1384,12 +1466,9 @@ export default function BinarySpotPro() {
         }
 
         if (
-          [
-            'DIGITDIFF',
-            'DIGITMATCH',
-            'DIGITOVER',
-            'DIGITUNDER',
-          ].includes(currentStrategy)
+          barrierContracts.includes(
+            contractType
+          )
         ) {
           if (
             !Number.isInteger(
@@ -1402,33 +1481,60 @@ export default function BinarySpotPro() {
               'Prediction digit must be between 0 and 9.'
             );
           }
+
+          if (
+            contractType ===
+              'DIGITOVER' &&
+            prediction > 8
+          ) {
+            throw new Error(
+              'Digit Over barrier must be between 0 and 8.'
+            );
+          }
+
+          if (
+            contractType ===
+              'DIGITUNDER' &&
+            prediction < 1
+          ) {
+            throw new Error(
+              'Digit Under barrier must be between 1 and 9.'
+            );
+          }
         }
 
         const payload = {
           proposal: 1,
+
           amount: Number(
             parsedStake.toFixed(2)
           ),
+
           basis: 'stake',
+
           contract_type:
-            currentStrategy,
+            contractType,
+
           currency:
             currencyRef.current ||
             'USD',
-          duration: parsedDuration,
+
+          duration:
+            parsedDuration,
+
           duration_unit: 't',
+
           underlying_symbol:
             currentSymbol,
-          req_id: nextReqId(),
+
+          req_id:
+            nextReqId(),
         };
 
         if (
-          [
-            'DIGITDIFF',
-            'DIGITMATCH',
-            'DIGITOVER',
-            'DIGITUNDER',
-          ].includes(currentStrategy)
+          barrierContracts.includes(
+            contractType
+          )
         ) {
           payload.barrier =
             String(prediction);
@@ -1458,24 +1564,33 @@ export default function BinarySpotPro() {
           canOpenNewContract({
             botRunning:
               autoBotRunningRef.current,
+
             emergencyStopped:
               emergencyStoppedRef.current,
+
             accountType:
               accountTypeRef.current,
+
             tradingConnected:
               tradingWsRef.current
                 ?.readyState ===
               WebSocket.OPEN,
+
             proposalPending:
               proposalPendingRef.current,
+
             buyPending:
               buyPendingRef.current,
+
             contractOpen:
               contractOpenRef.current,
+
             cooldownUntil:
               cooldownUntilRef.current,
+
             tradeCount:
               tradeCountRef.current,
+
             maxTrades:
               maxTradesRef.current,
           });
@@ -1502,6 +1617,18 @@ export default function BinarySpotPro() {
           return;
         }
 
+        const execution =
+          getExecutionFromSignal(
+            entrySignal
+          );
+
+        if (!execution.valid) {
+          stopAutoBot(
+            execution.reason
+          );
+          return;
+        }
+
         const ws =
           tradingWsRef.current;
 
@@ -1525,14 +1652,16 @@ export default function BinarySpotPro() {
           const payload =
             buildProposalPayload(
               stake,
-              entrySignal?.predictionDigit
+              entrySignal
             );
 
           const registration =
             beginProposalRequest(
               requestGuardRef.current,
               {
-                reqId: payload.req_id,
+                reqId:
+                  payload.req_id,
+
                 owner:
                   REQUEST_OWNER.AUTO,
               }
@@ -1563,15 +1692,31 @@ export default function BinarySpotPro() {
           setProposalError('');
 
           setAutoBotStatus(
-            `ENTRY SIGNAL — ${confidence.toFixed(
+            `ENTRY — ${entrySignal.strategyId} → ${execution.contractType} · ${confidence.toFixed(
               1
-            )}% confidence`
+            )}%`
           );
 
           addBotLog(
-            `ENTRY | ${strategyRef.current} | ${symbolRef.current} | Confidence ${confidence.toFixed(
+            `ENTRY | Strategy ${
+              entrySignal.strategyId ||
+              strategyRef.current
+            } | Contract ${
+              execution.contractType
+            }${
+              execution.predictionDigit !==
+                null &&
+              execution.predictionDigit !==
+                undefined
+                ? ` | Barrier ${execution.predictionDigit}`
+                : ''
+            } | ${
+              symbolRef.current
+            } | Confidence ${confidence.toFixed(
               1
-            )}% | Stake ${currencyRef.current} ${stake.toFixed(
+            )}% | Stake ${
+              currencyRef.current
+            } ${stake.toFixed(
               2
             )} | Req #${payload.req_id}`,
             'trade'
@@ -1621,9 +1766,17 @@ export default function BinarySpotPro() {
           evaluateEntrySignal({
             strategy:
               strategyRef.current,
-            digitHistory: history,
+
+            digitHistory:
+              history,
+
             predictionDigit:
               predictionDigitRef.current,
+
+            config: {
+              minimumConfidence:
+                minimumConfidenceRef.current,
+            },
           });
 
         setSignal(result);
@@ -1650,24 +1803,33 @@ export default function BinarySpotPro() {
           canOpenNewContract({
             botRunning:
               autoBotRunningRef.current,
+
             emergencyStopped:
               emergencyStoppedRef.current,
+
             accountType:
               accountTypeRef.current,
+
             tradingConnected:
               tradingWsRef.current
                 ?.readyState ===
               WebSocket.OPEN,
+
             proposalPending:
               proposalPendingRef.current,
+
             buyPending:
               buyPendingRef.current,
+
             contractOpen:
               contractOpenRef.current,
+
             cooldownUntil:
               cooldownUntilRef.current,
+
             tradeCount:
               tradeCountRef.current,
+
             maxTrades:
               maxTradesRef.current,
           });
@@ -1677,6 +1839,7 @@ export default function BinarySpotPro() {
             stopAutoBot(
               permission.reason
             );
+
             return;
           }
 
@@ -1695,6 +1858,7 @@ export default function BinarySpotPro() {
           setAutoBotStatus(
             `WAIT — ${result.reason}`
           );
+
           return;
         }
 
@@ -1708,6 +1872,19 @@ export default function BinarySpotPro() {
             ).toFixed(
               1
             )}% below minimum ${minimumConfidenceRef.current}%`
+          );
+
+          return;
+        }
+
+        const execution =
+          getExecutionFromSignal(
+            result
+          );
+
+        if (!execution.valid) {
+          setAutoBotStatus(
+            `WAIT — ${execution.reason}`
           );
           return;
         }
@@ -1754,18 +1931,25 @@ export default function BinarySpotPro() {
         const settlement =
           evaluateSettlementSafety({
             profit: result.profit,
+
             totalProfit:
               totalProfitRef.current,
+
             tradeCount:
               tradeCountRef.current,
+
             consecutiveLosses:
               consecutiveLossesRef.current,
+
             takeProfit:
               takeProfitRef.current,
+
             stopLoss:
               stopLossRef.current,
+
             maxTrades:
               maxTradesRef.current,
+
             maxConsecutiveLosses:
               maxLossesRef.current,
           });
@@ -1814,15 +1998,27 @@ export default function BinarySpotPro() {
         setTradeHistory(
           (previous) => [
             {
-              id: contract.contract_id,
-              result: result.result,
-              profit: result.profit,
-              stake: tradeStake,
+              id:
+                contract.contract_id,
+
+              result:
+                result.result,
+
+              profit:
+                result.profit,
+
+              stake:
+                tradeStake,
+
               strategy:
-                contract.contract_type ||
                 strategyRef.current,
+
+              contractType:
+                contract.contract_type,
+
               symbol:
                 symbolRef.current,
+
               time:
                 new Date().toLocaleTimeString(),
             },
@@ -1880,12 +2076,16 @@ export default function BinarySpotPro() {
           const stakeResult =
             calculateNextStake({
               won: true,
+
               baseStake:
                 baseStakeRef.current,
+
               currentStake:
                 currentStakeRef.current,
+
               martingale:
                 martingaleRef.current,
+
               maxStake:
                 maxStakeRef.current,
             });
@@ -1902,12 +2102,16 @@ export default function BinarySpotPro() {
           const stakeResult =
             calculateNextStake({
               won: false,
+
               baseStake:
                 baseStakeRef.current,
+
               currentStake:
                 currentStakeRef.current,
+
               martingale:
                 martingaleRef.current,
+
               maxStake:
                 maxStakeRef.current,
             });
@@ -1939,10 +2143,13 @@ export default function BinarySpotPro() {
           getPostSettlementAction({
             lifecycle:
               lifecycleRef.current,
+
             botRunning:
               autoBotRunningRef.current,
+
             emergencyStopped:
               emergencyStoppedRef.current,
+
             safetyStopTriggered:
               false,
           });
@@ -1965,11 +2172,19 @@ export default function BinarySpotPro() {
         const sessionStatus =
           buildSessionStatus({
             running: true,
+
             emergencyStopped:
               false,
-            contractOpen: false,
-            proposalPending: false,
-            buyPending: false,
+
+            contractOpen:
+              false,
+
+            proposalPending:
+              false,
+
+            buyPending:
+              false,
+
             cooldownUntil:
               cooldownUntilRef.current,
           });
@@ -1979,7 +2194,7 @@ export default function BinarySpotPro() {
         );
 
         addBotLog(
-          'Contract settled. Waiting for the next valid strategy signal.',
+          'Contract settled. Waiting for the next qualified strategy signal.',
           'system'
         );
       },
@@ -1989,6 +2204,11 @@ export default function BinarySpotPro() {
         syncLifecycleLabel,
       ]
     );
+
+  /*
+   * BUY reconciliation and socket safety logic below
+   * preserve the architecture already built.
+   */
 
   const finalizePendingBuyReconciliation =
     useCallback(
@@ -2070,8 +2290,10 @@ export default function BinarySpotPro() {
               createContractRecovery(),
               {
                 contractId,
+
                 accountId:
                   accountIdRef.current,
+
                 owner,
               }
             );
@@ -2101,13 +2323,16 @@ export default function BinarySpotPro() {
 
           setActiveContract({
             contractId,
+
             buyPrice:
               candidate.buyPrice ??
               pendingStatus.expectedStake ??
               null,
+
             transactionId:
               candidate.transactionId ||
               null,
+
             isSold: false,
           });
 
@@ -2123,15 +2348,20 @@ export default function BinarySpotPro() {
 
           persistLiveContractRecovery({
             contractId,
+
             accountId:
               accountIdRef.current,
+
             accountType:
               accountTypeRef.current,
+
             owner,
+
             symbol:
               candidate.symbol ||
               pendingStatus.symbol ||
               symbolRef.current,
+
             createdAt:
               pendingStatus.startedAt ||
               Date.now(),
@@ -2166,9 +2396,12 @@ export default function BinarySpotPro() {
               JSON.stringify({
                 proposal_open_contract:
                   1,
+
                 contract_id:
                   contractId,
+
                 subscribe: 1,
+
                 req_id:
                   nextReqId(),
               })
@@ -2256,24 +2489,34 @@ export default function BinarySpotPro() {
               {
                 id:
                   candidate.contractId,
+
                 result:
                   result.result,
+
                 profit:
                   safeProfit,
+
                 stake:
                   candidate.buyPrice ??
                   pendingStatus.expectedStake ??
                   0,
+
                 strategy:
-                  candidate.contractType ||
                   pendingStatus.strategy ||
                   strategyRef.current,
+
+                contractType:
+                  candidate.contractType ||
+                  null,
+
                 symbol:
                   candidate.symbol ||
                   pendingStatus.symbol ||
                   symbolRef.current,
+
                 time:
                   new Date().toLocaleTimeString(),
+
                 recovered: true,
               },
               ...previous.slice(0, 49),
@@ -2297,12 +2540,16 @@ export default function BinarySpotPro() {
           setActiveContract({
             contractId:
               candidate.contractId,
+
             buyPrice:
               candidate.buyPrice,
+
             transactionId:
               candidate.transactionId ||
               null,
+
             isSold: true,
+
             status:
               result.result,
           });
@@ -2364,8 +2611,8 @@ export default function BinarySpotPro() {
         addBotLog,
         clearStoredPendingBuy,
         syncLifecycleLabel,
-        syncPendingBuyReconciliation,
         syncPendingBuyRecovery,
+        syncPendingBuyReconciliation,
         syncPersistedRecovery,
         syncRecoveryBackoff,
         syncRecoveryLabel,
@@ -2427,8 +2674,11 @@ export default function BinarySpotPro() {
           ws.send(
             JSON.stringify({
               balance: 1,
+
               subscribe: 1,
-              req_id: nextReqId(),
+
+              req_id:
+                nextReqId(),
             })
           );
 
@@ -2452,6 +2702,7 @@ export default function BinarySpotPro() {
                 {
                   accountId:
                     accountIdRef.current,
+
                   accountType:
                     accountTypeRef.current,
                 }
@@ -2534,7 +2785,9 @@ export default function BinarySpotPro() {
                 {
                   accountId:
                     accountIdRef.current,
-                  tradingConnected: true,
+
+                  tradingConnected:
+                    true,
                 }
               );
 
@@ -2633,6 +2886,7 @@ export default function BinarySpotPro() {
               let proposalOwner = '';
 
               let matchedBuy = false;
+
               let buyOwner = '';
 
               if (
@@ -2731,13 +2985,19 @@ export default function BinarySpotPro() {
                   {
                     botRunning:
                       autoBotRunningRef.current,
+
                     contractOpen:
                       contractOpenRef.current,
+
                     recoveryInProgress:
                       recoveryStatus.recovering,
+
                     matchedProposal,
+
                     proposalOwner,
+
                     matchedBuy,
+
                     buyOwner,
                   }
                 );
@@ -2973,9 +3233,12 @@ export default function BinarySpotPro() {
                   beginBuyRequest(
                     requestGuardRef.current,
                     {
-                      reqId: buyReqId,
+                      reqId:
+                        buyReqId,
+
                       owner:
                         REQUEST_OWNER.AUTO,
+
                       proposalId:
                         data.proposal.id,
                     }
@@ -2994,20 +3257,30 @@ export default function BinarySpotPro() {
                   registerPendingBuy(
                     pendingBuyRecoveryRef.current,
                     {
-                      reqId: buyReqId,
+                      reqId:
+                        buyReqId,
+
                       proposalId:
                         data.proposal.id,
+
                       accountId:
                         accountIdRef.current,
+
                       accountType:
                         accountTypeRef.current,
-                      owner: 'auto',
+
+                      owner:
+                        'auto',
+
                       symbol:
                         symbolRef.current,
+
                       strategy:
                         strategyRef.current,
+
                       expectedStake:
                         askPrice,
+
                       startedAt:
                         Date.now(),
                     }
@@ -3058,7 +3331,7 @@ export default function BinarySpotPro() {
                 );
 
                 addBotLog(
-                  `AUTO BUY sent | Account ${accountIdRef.current} | Req #${buyReqId}`,
+                  `AUTO BUY sent | Strategy ${strategyRef.current} | Account ${accountIdRef.current} | Req #${buyReqId}`,
                   'trade'
                 );
 
@@ -3066,7 +3339,10 @@ export default function BinarySpotPro() {
                   JSON.stringify({
                     buy:
                       data.proposal.id,
-                    price: askPrice,
+
+                    price:
+                      askPrice,
+
                     req_id:
                       buyReqId,
                   })
@@ -3081,6 +3357,7 @@ export default function BinarySpotPro() {
                   {
                     proposalId:
                       data.proposal.id,
+
                     createdAt:
                       Date.now(),
                   }
@@ -3224,8 +3501,10 @@ export default function BinarySpotPro() {
                   recoveryRef.current,
                   {
                     contractId,
+
                     accountId:
                       accountIdRef.current,
+
                     owner:
                       isAutoOwner(owner)
                         ? 'auto'
@@ -3254,16 +3533,21 @@ export default function BinarySpotPro() {
                   persistLiveContractRecovery(
                     {
                       contractId,
+
                       accountId:
                         accountIdRef.current,
+
                       accountType:
                         accountTypeRef.current,
+
                       owner:
                         isAutoOwner(owner)
                           ? 'auto'
                           : 'manual',
+
                       symbol:
                         symbolRef.current,
+
                       createdAt:
                         Date.now(),
                     }
@@ -3281,13 +3565,16 @@ export default function BinarySpotPro() {
 
               setActiveContract({
                 contractId,
+
                 buyPrice:
                   data.buy.buy_price ??
                   data.buy.price ??
                   currentStakeRef.current,
+
                 transactionId:
                   data.buy.transaction_id ??
                   null,
+
                 isSold: false,
               });
 
@@ -3312,10 +3599,14 @@ export default function BinarySpotPro() {
                 JSON.stringify({
                   proposal_open_contract:
                     1,
+
                   contract_id:
                     contractId,
+
                   subscribe: 1,
-                  req_id: nextReqId(),
+
+                  req_id:
+                    nextReqId(),
                 })
               );
             }
@@ -3384,25 +3675,36 @@ export default function BinarySpotPro() {
               setActiveContract(
                 (previous) => ({
                   ...(previous || {}),
+
                   contractId:
                     contract.contract_id,
+
                   contractType:
                     contract.contract_type,
+
                   currency:
                     contract.currency,
+
                   buyPrice:
                     contract.buy_price,
+
                   payout:
                     contract.payout,
+
                   entrySpot:
                     contract.entry_spot,
+
                   currentSpot:
                     contract.current_spot,
+
                   exitSpot:
                     contract.exit_spot,
-                  isSold: Boolean(
-                    contract.is_sold
-                  ),
+
+                  isSold:
+                    Boolean(
+                      contract.is_sold
+                    ),
+
                   status:
                     contract.status,
                 })
@@ -3479,6 +3781,7 @@ export default function BinarySpotPro() {
                 handleAutoSettlement(
                   contract
                 );
+
                 return;
               }
 
@@ -3680,6 +3983,7 @@ export default function BinarySpotPro() {
         setBuyError(
           'Pending BUY reconciliation is restricted to demo accounts.'
         );
+
         return;
       }
 
@@ -3702,21 +4006,27 @@ export default function BinarySpotPro() {
       syncPendingBuyReconciliation();
 
       setBuyError('');
+
       setAutoBotStatus(
         'Reconciling uncertain BUY'
       );
 
       try {
-        const response = await fetch(
-          `/api/auth/deriv/session?account_id=${encodeURIComponent(
-            pendingStatus.accountId
-          )}`,
-          {
-            method: 'GET',
-            credentials: 'include',
-            cache: 'no-store',
-          }
-        );
+        const response =
+          await fetch(
+            `/api/auth/deriv/session?account_id=${encodeURIComponent(
+              pendingStatus.accountId
+            )}`,
+            {
+              method: 'GET',
+
+              credentials:
+                'include',
+
+              cache:
+                'no-store',
+            }
+          );
 
         const data =
           await response.json();
@@ -3785,6 +4095,7 @@ export default function BinarySpotPro() {
         );
 
         syncRecoveryBackoff();
+
         return;
       }
 
@@ -3798,16 +4109,21 @@ export default function BinarySpotPro() {
         true;
 
       try {
-        const response = await fetch(
-          `/api/auth/deriv/session?account_id=${encodeURIComponent(
-            status.accountId
-          )}`,
-          {
-            method: 'GET',
-            credentials: 'include',
-            cache: 'no-store',
-          }
-        );
+        const response =
+          await fetch(
+            `/api/auth/deriv/session?account_id=${encodeURIComponent(
+              status.accountId
+            )}`,
+            {
+              method: 'GET',
+
+              credentials:
+                'include',
+
+              cache:
+                'no-store',
+            }
+          );
 
         const data =
           await response.json();
@@ -3874,11 +4190,18 @@ export default function BinarySpotPro() {
           }
 
           const response =
-            await fetch(endpoint, {
-              method: 'GET',
-              credentials: 'include',
-              cache: 'no-store',
-            });
+            await fetch(
+              endpoint,
+              {
+                method: 'GET',
+
+                credentials:
+                  'include',
+
+                cache:
+                  'no-store',
+              }
+            );
 
           let data = null;
 
@@ -3898,20 +4221,36 @@ export default function BinarySpotPro() {
             setIsAuthorized(false);
 
             setAccounts([]);
-            setSelectedAccountId('');
+
+            setSelectedAccountId(
+              ''
+            );
+
             setAccountId('');
-            accountIdRef.current = '';
+
+            accountIdRef.current =
+              '';
+
             setAccountType('');
-            accountTypeRef.current = '';
+
+            accountTypeRef.current =
+              '';
+
             setBalance(null);
+
             setCurrency('USD');
-            currencyRef.current = 'USD';
+
+            currencyRef.current =
+              'USD';
 
             if (
-              response.status !== 401 &&
+              response.status !==
+                401 &&
               data?.error
             ) {
-              setAuthError(data.error);
+              setAuthError(
+                data.error
+              );
             }
 
             return;
@@ -3920,7 +4259,9 @@ export default function BinarySpotPro() {
           setIsAuthorized(true);
 
           const availableAccounts =
-            Array.isArray(data.accounts)
+            Array.isArray(
+              data.accounts
+            )
               ? data.accounts
               : [];
 
@@ -3934,6 +4275,7 @@ export default function BinarySpotPro() {
             setAuthError(
               'No Deriv Options account was found.'
             );
+
             return;
           }
 
@@ -3949,7 +4291,10 @@ export default function BinarySpotPro() {
             data.account.currency ||
             'USD';
 
-          setAccountId(nextAccountId);
+          setAccountId(
+            nextAccountId
+          );
+
           accountIdRef.current =
             nextAccountId;
 
@@ -3979,22 +4324,28 @@ export default function BinarySpotPro() {
           autoBotRunningRef.current =
             false;
 
-          setIsAutoBotRunning(false);
+          setIsAutoBotRunning(
+            false
+          );
 
           emergencyStoppedRef.current =
             false;
 
-          setEmergencyStopped(false);
+          setEmergencyStopped(
+            false
+          );
 
           proposalPendingRef.current =
             false;
 
-          buyPendingRef.current = false;
+          buyPendingRef.current =
+            false;
 
           contractOpenRef.current =
             false;
 
-          cooldownUntilRef.current = 0;
+          cooldownUntilRef.current =
+            0;
 
           lifecycleRef.current =
             createTradeLifecycle();
@@ -4030,10 +4381,16 @@ export default function BinarySpotPro() {
           clearRecoveryTimer();
 
           setProposalData(null);
-          setProposalClock(Date.now());
+
+          setProposalClock(
+            Date.now()
+          );
+
           setProposalError('');
           setBuyError('');
+
           setActiveContract(null);
+
           setContractProfit(null);
 
           setContractStatus(
@@ -4041,7 +4398,8 @@ export default function BinarySpotPro() {
           );
 
           setAutoBotStatus(
-            nextAccountType === 'demo'
+            nextAccountType ===
+              'demo'
               ? 'Standby'
               : 'Real account selected — execution blocked'
           );
@@ -4071,6 +4429,7 @@ export default function BinarySpotPro() {
                 {
                   accountId:
                     nextAccountId,
+
                   accountType:
                     nextAccountType,
                 }
@@ -4269,7 +4628,8 @@ export default function BinarySpotPro() {
             }
           }
 
-          let restoredPending = false;
+          let restoredPending =
+            false;
 
           const storedPending =
             loadPendingBuyRecoveryRecord();
@@ -4292,6 +4652,7 @@ export default function BinarySpotPro() {
                 {
                   accountId:
                     nextAccountId,
+
                   accountType:
                     nextAccountType,
                 }
@@ -4309,26 +4670,36 @@ export default function BinarySpotPro() {
                   {
                     reqId:
                       record.reqId,
+
                     proposalId:
                       record.proposalId,
+
                     accountId:
                       record.accountId,
+
                     accountType:
                       record.accountType,
+
                     owner:
                       record.owner,
+
                     symbol:
                       record.symbol,
+
                     strategy:
                       record.strategy,
+
                     expectedStake:
                       record.expectedStake,
+
                     startedAt:
                       record.startedAt,
                   }
                 );
 
-              if (registration.valid) {
+              if (
+                registration.valid
+              ) {
                 pendingBuyRecoveryRef.current =
                   markPendingBuyAmbiguous(
                     registration.recovery,
@@ -4341,7 +4712,8 @@ export default function BinarySpotPro() {
                     createPendingBuyReconciliation()
                   );
 
-                restoredPending = true;
+                restoredPending =
+                  true;
 
                 if (record.symbol) {
                   symbolRef.current =
@@ -4383,6 +4755,7 @@ export default function BinarySpotPro() {
                   {
                     accountId:
                       nextAccountId,
+
                     accountType:
                       nextAccountType,
                   }
@@ -4400,8 +4773,10 @@ export default function BinarySpotPro() {
                     {
                       contractId:
                         record.contractId,
+
                       accountId:
                         record.accountId,
+
                       owner:
                         record.owner,
                     }
@@ -4421,7 +4796,9 @@ export default function BinarySpotPro() {
                   setActiveContract({
                     contractId:
                       record.contractId,
-                    isSold: false,
+
+                    isSold:
+                      false,
                   });
 
                   setContractStatus(
@@ -4483,10 +4860,13 @@ export default function BinarySpotPro() {
               data.wsUrl
             );
           } else {
-            setIsTradingConnected(false);
+            setIsTradingConnected(
+              false
+            );
 
             setAuthError(
-              'Deriv account loaded, but the authenticated trading connection is unavailable.'
+              data.error ||
+                'Deriv account loaded, but the authenticated trading connection is unavailable.'
             );
           }
         } catch (error) {
@@ -4500,7 +4880,10 @@ export default function BinarySpotPro() {
           );
         } finally {
           setIsLoading(false);
-          setIsConnecting(false);
+
+          setIsConnecting(
+            false
+          );
         }
       },
       [
@@ -4529,7 +4912,9 @@ export default function BinarySpotPro() {
       );
 
     const derivError =
-      params.get('deriv_error');
+      params.get(
+        'deriv_error'
+      );
 
     const derivConnected =
       params.get(
@@ -4537,7 +4922,9 @@ export default function BinarySpotPro() {
       );
 
     if (derivError) {
-      setAuthError(derivError);
+      setAuthError(
+        derivError
+      );
     }
 
     if (
@@ -4575,7 +4962,9 @@ export default function BinarySpotPro() {
   ]);
 
   const switchAccount =
-    async (newAccountId) => {
+    async (
+      newAccountId
+    ) => {
       if (
         !newAccountId ||
         newAccountId ===
@@ -4605,12 +4994,15 @@ export default function BinarySpotPro() {
         contractOpenRef.current ||
         requestStatus.buyPending ||
         !pendingPermission.allowed ||
-        (recoveryStatus.hasContract &&
-          !recoveryStatus.settled)
+        (
+          recoveryStatus.hasContract &&
+          !recoveryStatus.settled
+        )
       ) {
         setAuthError(
           'Resolve the active, recovering, or uncertain BUY before switching accounts.'
         );
+
         return;
       }
 
@@ -4692,12 +5084,15 @@ export default function BinarySpotPro() {
         contractOpenRef.current ||
         requestStatus.buyPending ||
         pendingStatus.blocking ||
-        (recoveryStatus.hasContract &&
-          !recoveryStatus.settled)
+        (
+          recoveryStatus.hasContract &&
+          !recoveryStatus.settled
+        )
       ) {
         setAuthError(
           'Resolve the active, recovering, or uncertain BUY before logging out of Deriv.'
         );
+
         return;
       }
 
@@ -4716,14 +5111,19 @@ export default function BinarySpotPro() {
         clearManualProposal();
         closeTradingSocket();
 
-        const response = await fetch(
-          '/api/auth/deriv/logout',
-          {
-            method: 'POST',
-            credentials: 'include',
-            cache: 'no-store',
-          }
-        );
+        const response =
+          await fetch(
+            '/api/auth/deriv/logout',
+            {
+              method: 'POST',
+
+              credentials:
+                'include',
+
+              cache:
+                'no-store',
+            }
+          );
 
         let data = null;
 
@@ -4745,6 +5145,14 @@ export default function BinarySpotPro() {
         clearContractRecoveryRecord();
         clearPendingBuyRecoveryRecord();
 
+        sessionStorage.removeItem(
+          'deriv_pkce_verifier'
+        );
+
+        sessionStorage.removeItem(
+          'deriv_oauth_state'
+        );
+
         autoBotRunningRef.current =
           false;
 
@@ -4760,11 +5168,17 @@ export default function BinarySpotPro() {
         contractOpenRef.current =
           false;
 
-        cooldownUntilRef.current = 0;
+        cooldownUntilRef.current =
+          0;
 
-        accountIdRef.current = '';
-        accountTypeRef.current = '';
-        currencyRef.current = 'USD';
+        accountIdRef.current =
+          '';
+
+        accountTypeRef.current =
+          '';
+
+        currencyRef.current =
+          'USD';
 
         lifecycleRef.current =
           createTradeLifecycle();
@@ -4797,7 +5211,6 @@ export default function BinarySpotPro() {
 
         setAccounts([]);
         setSelectedAccountId('');
-
         setAccountId('');
         setAccountType('');
 
@@ -4811,7 +5224,10 @@ export default function BinarySpotPro() {
         setBuyLoading(false);
 
         setProposalData(null);
-        setProposalClock(Date.now());
+
+        setProposalClock(
+          Date.now()
+        );
 
         setProposalError('');
         setBuyError('');
@@ -4848,7 +5264,10 @@ export default function BinarySpotPro() {
         );
 
         setReconciliationReason('');
-        setReconciliationRunning(false);
+
+        setReconciliationRunning(
+          false
+        );
 
         setSocketErrorLabel(
           'No socket errors'
@@ -4880,7 +5299,9 @@ export default function BinarySpotPro() {
             'Unable to log out of Deriv.'
         );
       } finally {
-        setIsLoggingOut(false);
+        setIsLoggingOut(
+          false
+        );
       }
     };
 
@@ -4888,19 +5309,26 @@ export default function BinarySpotPro() {
     let ws;
 
     try {
-      ws = new WebSocket(
-        PUBLIC_WS_URL
-      );
+      ws =
+        new WebSocket(
+          PUBLIC_WS_URL
+        );
 
-      publicWsRef.current = ws;
+      publicWsRef.current =
+        ws;
 
       ws.onopen = () => {
-        setIsMarketConnected(true);
+        setIsMarketConnected(
+          true
+        );
 
         ws.send(
           JSON.stringify({
-            ticks: symbol,
-            subscribe: 1,
+            ticks:
+              symbol,
+
+            subscribe:
+              1,
           })
         );
 
@@ -4919,10 +5347,14 @@ export default function BinarySpotPro() {
           }, 30000);
       };
 
-      ws.onmessage = (event) => {
+      ws.onmessage = (
+        event
+      ) => {
         try {
           const data =
-            JSON.parse(event.data);
+            JSON.parse(
+              event.data
+            );
 
           if (data.error) {
             return;
@@ -4954,8 +5386,12 @@ export default function BinarySpotPro() {
             }
 
             setLastTick(
-              (previous) => {
-                setPrevTick(previous);
+              (
+                previous
+              ) => {
+                setPrevTick(
+                  previous
+                );
 
                 return normalizedTick.quote;
               }
@@ -4989,7 +5425,7 @@ export default function BinarySpotPro() {
               prependDigitToHistory(
                 digitHistoryRef.current,
                 normalizedTick.lastDigit,
-                100
+                150
               );
 
             digitHistoryRef.current =
@@ -5007,28 +5443,39 @@ export default function BinarySpotPro() {
       };
 
       ws.onerror = () => {
-        setIsMarketConnected(false);
+        setIsMarketConnected(
+          false
+        );
       };
 
       ws.onclose = () => {
-        setIsMarketConnected(false);
+        setIsMarketConnected(
+          false
+        );
       };
     } catch {
-      setIsMarketConnected(false);
+      setIsMarketConnected(
+        false
+      );
     }
 
     return () => {
-      if (publicPingRef.current) {
+      if (
+        publicPingRef.current
+      ) {
         clearInterval(
           publicPingRef.current
         );
 
-        publicPingRef.current = null;
+        publicPingRef.current =
+          null;
       }
 
       if (ws) {
         try {
-          ws.onclose = null;
+          ws.onclose =
+            null;
+
           ws.close();
         } catch {}
       }
@@ -5042,136 +5489,174 @@ export default function BinarySpotPro() {
     setSignal(
       evaluateEntrySignal({
         strategy,
+
         digitHistory:
           digitHistoryRef.current,
+
         predictionDigit,
+
+        config: {
+          minimumConfidence:
+            Number(
+              minimumConfidence
+            ) || 62,
+        },
       })
     );
   }, [
     strategy,
     predictionDigit,
+    minimumConfidence,
   ]);
 
-  const connectDeriv = async () => {
-    try {
-      setAuthError('');
-      setIsConnecting(true);
+  const connectDeriv =
+    async () => {
+      try {
+        setAuthError('');
 
-      const chars =
-        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
-
-      const bytes =
-        new Uint8Array(64);
-
-      crypto.getRandomValues(bytes);
-
-      const verifier =
-        Array.from(bytes)
-          .map(
-            (byte) =>
-              chars[
-                byte %
-                  chars.length
-              ]
-          )
-          .join('');
-
-      const digest =
-        await crypto.subtle.digest(
-          'SHA-256',
-          new TextEncoder().encode(
-            verifier
-          )
+        setIsConnecting(
+          true
         );
 
-      const challenge =
-        btoa(
-          String.fromCharCode(
-            ...new Uint8Array(
-              digest
+        const chars =
+          'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+
+        const bytes =
+          new Uint8Array(
+            64
+          );
+
+        crypto.getRandomValues(
+          bytes
+        );
+
+        const verifier =
+          Array.from(bytes)
+            .map(
+              (byte) =>
+                chars[
+                  byte %
+                    chars.length
+                ]
+            )
+            .join('');
+
+        const digest =
+          await crypto.subtle.digest(
+            'SHA-256',
+            new TextEncoder().encode(
+              verifier
+            )
+          );
+
+        const challenge =
+          btoa(
+            String.fromCharCode(
+              ...new Uint8Array(
+                digest
+              )
             )
           )
-        )
-          .replace(/\+/g, '-')
-          .replace(/\//g, '_')
-          .replace(/=+$/, '');
+            .replace(
+              /\+/g,
+              '-'
+            )
+            .replace(
+              /\//g,
+              '_'
+            )
+            .replace(
+              /=+$/,
+              ''
+            );
 
-      const stateBytes =
-        new Uint8Array(16);
+        const stateBytes =
+          new Uint8Array(
+            16
+          );
 
-      crypto.getRandomValues(
-        stateBytes
-      );
+        crypto.getRandomValues(
+          stateBytes
+        );
 
-      const state =
-        Array.from(stateBytes)
-          .map((byte) =>
-            byte
-              .toString(16)
-              .padStart(2, '0')
+        const state =
+          Array.from(
+            stateBytes
           )
-          .join('');
+            .map(
+              (byte) =>
+                byte
+                  .toString(16)
+                  .padStart(
+                    2,
+                    '0'
+                  )
+            )
+            .join('');
 
-      sessionStorage.setItem(
-        'deriv_pkce_verifier',
-        verifier
-      );
+        sessionStorage.setItem(
+          'deriv_pkce_verifier',
+          verifier
+        );
 
-      sessionStorage.setItem(
-        'deriv_oauth_state',
-        state
-      );
+        sessionStorage.setItem(
+          'deriv_oauth_state',
+          state
+        );
 
-      const authUrl = new URL(
-        'https://auth.deriv.com/oauth2/auth'
-      );
+        const authUrl =
+          new URL(
+            'https://auth.deriv.com/oauth2/auth'
+          );
 
-      authUrl.searchParams.set(
-        'response_type',
-        'code'
-      );
+        authUrl.searchParams.set(
+          'response_type',
+          'code'
+        );
 
-      authUrl.searchParams.set(
-        'client_id',
-        CLIENT_ID
-      );
+        authUrl.searchParams.set(
+          'client_id',
+          CLIENT_ID
+        );
 
-      authUrl.searchParams.set(
-        'redirect_uri',
-        REDIRECT_URI
-      );
+        authUrl.searchParams.set(
+          'redirect_uri',
+          REDIRECT_URI
+        );
 
-      authUrl.searchParams.set(
-        'scope',
-        'trade account_manage'
-      );
+        authUrl.searchParams.set(
+          'scope',
+          'trade account_manage'
+        );
 
-      authUrl.searchParams.set(
-        'state',
-        state
-      );
+        authUrl.searchParams.set(
+          'state',
+          state
+        );
 
-      authUrl.searchParams.set(
-        'code_challenge',
-        challenge
-      );
+        authUrl.searchParams.set(
+          'code_challenge',
+          challenge
+        );
 
-      authUrl.searchParams.set(
-        'code_challenge_method',
-        'S256'
-      );
+        authUrl.searchParams.set(
+          'code_challenge_method',
+          'S256'
+        );
 
-      window.location.assign(
-        authUrl.toString()
-      );
-    } catch {
-      setIsConnecting(false);
+        window.location.assign(
+          authUrl.toString()
+        );
+      } catch {
+        setIsConnecting(
+          false
+        );
 
-      setAuthError(
-        'Unable to open Deriv authorization.'
-      );
-    }
-  };
+        setAuthError(
+          'Unable to open Deriv authorization.'
+        );
+      }
+    };
 
   const startAutoBot = () => {
     const pendingPermission =
@@ -5183,6 +5668,7 @@ export default function BinarySpotPro() {
       setBuyError(
         pendingPermission.reason
       );
+
       return;
     }
 
@@ -5198,6 +5684,7 @@ export default function BinarySpotPro() {
       setBuyError(
         'Wait for the active or recovering contract to settle.'
       );
+
       return;
     }
 
@@ -5210,6 +5697,7 @@ export default function BinarySpotPro() {
       setBuyError(
         requestPermission.reason
       );
+
       return;
     }
 
@@ -5217,14 +5705,23 @@ export default function BinarySpotPro() {
       validateBotSettings({
         accountType:
           accountTypeRef.current,
+
         baseStake,
+
         maxStake,
+
         martingale,
+
         takeProfit,
+
         stopLoss,
+
         maxTrades,
+
         maxConsecutiveLosses,
+
         cooldownSeconds,
+
         minimumConfidence,
       });
 
@@ -5232,6 +5729,7 @@ export default function BinarySpotPro() {
       setBuyError(
         validation.reason
       );
+
       return;
     }
 
@@ -5242,6 +5740,7 @@ export default function BinarySpotPro() {
       setBuyError(
         'Real-money bot execution is currently blocked. Switch to a Demo account to run Bot Studio.'
       );
+
       return;
     }
 
@@ -5251,6 +5750,7 @@ export default function BinarySpotPro() {
       setBuyError(
         'Clear Emergency Stop before starting.'
       );
+
       return;
     }
 
@@ -5258,21 +5758,28 @@ export default function BinarySpotPro() {
       setBuyError(
         'Trading socket is not connected.'
       );
+
       return;
     }
 
     clearManualProposal();
 
     const startingStake =
-      Number(baseStake);
+      Number(
+        baseStake
+      );
 
     setBuyError('');
     setProposalError('');
 
-    tradeCountRef.current = 0;
-    totalProfitRef.current = 0;
+    tradeCountRef.current =
+      0;
 
-    consecutiveLossesRef.current = 0;
+    totalProfitRef.current =
+      0;
+
+    consecutiveLossesRef.current =
+      0;
 
     setTradeCount(0);
     setWinCount(0);
@@ -5286,10 +5793,13 @@ export default function BinarySpotPro() {
       startingStake;
 
     setCurrentStake(
-      startingStake.toFixed(2)
+      startingStake.toFixed(
+        2
+      )
     );
 
-    cooldownUntilRef.current = 0;
+    cooldownUntilRef.current =
+      0;
 
     lifecycleRef.current =
       createTradeLifecycle();
@@ -5313,35 +5823,62 @@ export default function BinarySpotPro() {
       'No socket errors'
     );
 
-    autoBotRunningRef.current = true;
+    autoBotRunningRef.current =
+      true;
 
-    setIsAutoBotRunning(true);
+    setIsAutoBotRunning(
+      true
+    );
+
+    const selected =
+      getStrategyById(
+        strategy
+      );
 
     setAutoBotStatus(
-      `Scanning Market — ${accountIdRef.current}`
+      `Scanning — ${
+        selected?.name ||
+        strategy
+      }`
     );
 
     addBotLog(
-      `PENDING BUY GUARD ACTIVE — ${strategy} — Account ${accountIdRef.current}`,
+      `BOT STARTED | ${
+        selected?.name ||
+        strategy
+      } | ${symbol} | Account ${accountIdRef.current} | Minimum confidence ${minimumConfidence}%`,
       'system'
     );
 
     const initialSignal =
       evaluateEntrySignal({
         strategy,
+
         digitHistory:
           digitHistoryRef.current,
+
         predictionDigit,
+
+        config: {
+          minimumConfidence:
+            Number(
+              minimumConfidence
+            ) || 62,
+        },
       });
 
-    setSignal(initialSignal);
+    setSignal(
+      initialSignal
+    );
 
     if (
       initialSignal.shouldTrade &&
       Number(
         initialSignal.confidence
       ) >=
-        Number(minimumConfidence)
+        Number(
+          minimumConfidence
+        )
     ) {
       requestAutoProposal(
         initialSignal
@@ -5349,152 +5886,472 @@ export default function BinarySpotPro() {
     }
   };
 
-  const requestManualProposal = () => {
-    const pendingPermission =
-      canOpenAfterPendingBuy(
-        pendingBuyRecoveryRef.current
-      );
-
-    if (!pendingPermission.allowed) {
-      setProposalError(
-        pendingPermission.reason
-      );
-      return;
-    }
-
-    const recoveryStatus =
-      getContractRecoveryStatus(
-        recoveryRef.current
-      );
-
-    if (
-      recoveryStatus.hasContract &&
-      !recoveryStatus.settled
-    ) {
-      setProposalError(
-        'Wait for the active or recovering contract to settle.'
-      );
-      return;
-    }
-
-    const requestPermission =
-      canStartNewBotSession(
-        requestGuardRef.current
-      );
-
-    if (!requestPermission.allowed) {
-      setProposalError(
-        requestPermission.reason
-      );
-      return;
-    }
-
-    if (
-      emergencyStoppedRef.current
-    ) {
-      setProposalError(
-        'Emergency Stop is active.'
-      );
-      return;
-    }
-
-    if (
-      accountTypeRef.current !==
-      'demo'
-    ) {
-      setProposalError(
-        'Real-money execution is currently blocked. Switch to a Demo account to request a tradable proposal.'
-      );
-      return;
-    }
-
-    const ws =
-      tradingWsRef.current;
-
-    if (
-      !ws ||
-      ws.readyState !==
-        WebSocket.OPEN
-    ) {
-      setProposalError(
-        'Trading socket is not ready.'
-      );
-      return;
-    }
-
-    try {
-      clearManualProposal();
-
-      lifecycleRef.current =
-        beginTradeLifecycle({
-          mode: 'manual',
-        });
-
-      syncLifecycleLabel();
-
-      const payload =
-        buildProposalPayload(
-          Number(baseStake)
+  const requestManualProposal =
+    () => {
+      const pendingPermission =
+        canOpenAfterPendingBuy(
+          pendingBuyRecoveryRef.current
         );
 
+      if (!pendingPermission.allowed) {
+        setProposalError(
+          pendingPermission.reason
+        );
+
+        return;
+      }
+
+      const recoveryStatus =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
+
+      if (
+        recoveryStatus.hasContract &&
+        !recoveryStatus.settled
+      ) {
+        setProposalError(
+          'Wait for the active or recovering contract to settle.'
+        );
+
+        return;
+      }
+
+      const requestPermission =
+        canStartNewBotSession(
+          requestGuardRef.current
+        );
+
+      if (!requestPermission.allowed) {
+        setProposalError(
+          requestPermission.reason
+        );
+
+        return;
+      }
+
+      if (
+        emergencyStoppedRef.current
+      ) {
+        setProposalError(
+          'Emergency Stop is active.'
+        );
+
+        return;
+      }
+
+      if (
+        accountTypeRef.current !==
+        'demo'
+      ) {
+        setProposalError(
+          'Real-money execution is currently blocked. Switch to a Demo account to request a tradable proposal.'
+        );
+
+        return;
+      }
+
+      const ws =
+        tradingWsRef.current;
+
+      if (
+        !ws ||
+        ws.readyState !==
+          WebSocket.OPEN
+      ) {
+        setProposalError(
+          'Trading socket is not ready.'
+        );
+
+        return;
+      }
+
+      try {
+        clearManualProposal();
+
+        lifecycleRef.current =
+          beginTradeLifecycle({
+            mode: 'manual',
+          });
+
+        syncLifecycleLabel();
+
+        let executionSignal =
+          null;
+
+        if (
+          isAdvancedStrategy(
+            strategyRef.current
+          )
+        ) {
+          executionSignal =
+            evaluateEntrySignal({
+              strategy:
+                strategyRef.current,
+
+              digitHistory:
+                digitHistoryRef.current,
+
+              predictionDigit:
+                predictionDigitRef.current,
+
+              config: {
+                minimumConfidence:
+                  minimumConfidenceRef.current,
+              },
+            });
+
+          setSignal(
+            executionSignal
+          );
+
+          if (
+            !executionSignal.shouldTrade
+          ) {
+            throw new Error(
+              `Advanced strategy has no qualified execution signal yet: ${executionSignal.reason}`
+            );
+          }
+
+          if (
+            Number(
+              executionSignal.confidence
+            ) <
+            minimumConfidenceRef.current
+          ) {
+            throw new Error(
+              `Signal confidence ${Number(
+                executionSignal.confidence
+              ).toFixed(
+                1
+              )}% is below your minimum ${minimumConfidenceRef.current}%.`
+            );
+          }
+        }
+
+        const payload =
+          buildProposalPayload(
+            Number(baseStake),
+            executionSignal
+          );
+
+        const registration =
+          beginProposalRequest(
+            requestGuardRef.current,
+            {
+              reqId:
+                payload.req_id,
+
+              owner:
+                REQUEST_OWNER.MANUAL,
+            }
+          );
+
+        if (!registration.valid) {
+          throw new Error(
+            registration.reason
+          );
+        }
+
+        requestGuardRef.current =
+          registration.guard;
+
+        syncRequestStatus();
+
+        proposalPendingRef.current =
+          true;
+
+        setProposalLoading(true);
+        setProposalError('');
+        setBuyError('');
+
+        ws.send(
+          JSON.stringify(
+            payload
+          )
+        );
+      } catch (error) {
+        requestGuardRef.current =
+          invalidateBotGeneration(
+            requestGuardRef.current
+          );
+
+        syncRequestStatus();
+
+        lifecycleRef.current =
+          createTradeLifecycle();
+
+        syncLifecycleLabel();
+
+        proposalPendingRef.current =
+          false;
+
+        setProposalLoading(false);
+
+        clearManualProposal();
+
+        setProposalError(
+          error.message
+        );
+      }
+    };
+
+  const buyManualDemoProposal =
+    () => {
+      const pendingPermission =
+        canOpenAfterPendingBuy(
+          pendingBuyRecoveryRef.current
+        );
+
+      if (!pendingPermission.allowed) {
+        setBuyError(
+          pendingPermission.reason
+        );
+
+        return;
+      }
+
+      if (
+        emergencyStoppedRef.current
+      ) {
+        setBuyError(
+          'Emergency Stop is active.'
+        );
+
+        return;
+      }
+
+      if (
+        accountTypeRef.current !==
+        'demo'
+      ) {
+        setBuyError(
+          'Real-money purchases are blocked.'
+        );
+
+        return;
+      }
+
+      if (!proposalData?.id) {
+        setBuyError(
+          'Get a proposal first.'
+        );
+
+        return;
+      }
+
+      const freshnessPermission =
+        canBuyFreshProposal(
+          proposalFreshnessRef.current,
+          {
+            proposalId:
+              proposalData.id,
+
+            now:
+              Date.now(),
+          }
+        );
+
+      if (
+        !freshnessPermission.allowed
+      ) {
+        setBuyError(
+          freshnessPermission.reason
+        );
+
+        return;
+      }
+
+      if (
+        contractOpenRef.current
+      ) {
+        setBuyError(
+          'An active contract already exists.'
+        );
+
+        return;
+      }
+
+      const price =
+        Number(
+          proposalData.ask_price
+        );
+
+      if (
+        !Number.isFinite(
+          price
+        ) ||
+        price <= 0
+      ) {
+        setBuyError(
+          'Invalid proposal price.'
+        );
+
+        return;
+      }
+
+      const ws =
+        tradingWsRef.current;
+
+      if (
+        !ws ||
+        ws.readyState !==
+          WebSocket.OPEN
+      ) {
+        setBuyError(
+          'Trading socket is offline.'
+        );
+
+        return;
+      }
+
+      if (
+        lifecycleRef.current
+          ?.mode !==
+        'manual'
+      ) {
+        lifecycleRef.current =
+          beginTradeLifecycle({
+            mode:
+              'manual',
+          });
+
+        syncLifecycleLabel();
+      }
+
+      const buyReqId =
+        nextReqId();
+
       const registration =
-        beginProposalRequest(
+        beginBuyRequest(
           requestGuardRef.current,
           {
-            reqId: payload.req_id,
+            reqId:
+              buyReqId,
+
             owner:
               REQUEST_OWNER.MANUAL,
+
+            proposalId:
+              proposalData.id,
           }
         );
 
       if (!registration.valid) {
-        throw new Error(
+        setBuyError(
           registration.reason
         );
+
+        return;
+      }
+
+      const pendingRegistration =
+        registerPendingBuy(
+          pendingBuyRecoveryRef.current,
+          {
+            reqId:
+              buyReqId,
+
+            proposalId:
+              proposalData.id,
+
+            accountId:
+              accountIdRef.current,
+
+            accountType:
+              accountTypeRef.current,
+
+            owner:
+              'manual',
+
+            symbol:
+              symbolRef.current,
+
+            strategy:
+              strategyRef.current,
+
+            expectedStake:
+              price,
+
+            startedAt:
+              Date.now(),
+          }
+        );
+
+      if (
+        !pendingRegistration.valid
+      ) {
+        setBuyError(
+          pendingRegistration.reason
+        );
+
+        return;
       }
 
       requestGuardRef.current =
         registration.guard;
 
-      syncRequestStatus();
+      pendingBuyRecoveryRef.current =
+        pendingRegistration.recovery;
 
-      proposalPendingRef.current =
+      const persisted =
+        persistPendingBuyRecovery(
+          pendingRegistration.recovery
+        );
+
+      if (!persisted.saved) {
+        setBuyError(
+          'Unable to persist pending BUY safety state.'
+        );
+
+        return;
+      }
+
+      pendingBuyReconciliationRef.current =
+        clearPendingBuyReconciliation();
+
+      syncStoredPendingBuy();
+      syncRequestStatus();
+      syncPendingBuyRecovery();
+      syncPendingBuyReconciliation();
+
+      buyPendingRef.current =
         true;
 
-      setProposalLoading(true);
-      setProposalError('');
+      setBuyLoading(true);
       setBuyError('');
 
       ws.send(
-        JSON.stringify(payload)
+        JSON.stringify({
+          buy:
+            proposalData.id,
+
+          price,
+
+          req_id:
+            buyReqId,
+        })
       );
-    } catch (error) {
-      requestGuardRef.current =
-        invalidateBotGeneration(
-          requestGuardRef.current
+    };
+
+  const applySuggestedDigit =
+    () => {
+      const suggestion =
+        getSuggestedDigit(
+          strategy,
+          digitHistoryRef.current
         );
 
-      syncRequestStatus();
-
-      lifecycleRef.current =
-        createTradeLifecycle();
-
-      syncLifecycleLabel();
-
-      proposalPendingRef.current =
-        false;
-
-      setProposalLoading(false);
-
-      clearManualProposal();
-
-      setProposalError(
-        error.message
+      setPredictionDigit(
+        String(
+          suggestion
+        )
       );
-    }
-  };
+    };
 
-  const buyManualDemoProposal = () => {
+  const changeSymbol = (
+    nextSymbol
+  ) => {
     const pendingPermission =
       canOpenAfterPendingBuy(
         pendingBuyRecoveryRef.current
@@ -5504,218 +6361,7 @@ export default function BinarySpotPro() {
       setBuyError(
         pendingPermission.reason
       );
-      return;
-    }
 
-    if (
-      emergencyStoppedRef.current
-    ) {
-      setBuyError(
-        'Emergency Stop is active.'
-      );
-      return;
-    }
-
-    if (
-      accountTypeRef.current !==
-      'demo'
-    ) {
-      setBuyError(
-        'Real-money purchases are blocked.'
-      );
-      return;
-    }
-
-    if (!proposalData?.id) {
-      setBuyError(
-        'Get a proposal first.'
-      );
-      return;
-    }
-
-    const freshnessPermission =
-      canBuyFreshProposal(
-        proposalFreshnessRef.current,
-        {
-          proposalId:
-            proposalData.id,
-          now: Date.now(),
-        }
-      );
-
-    if (
-      !freshnessPermission.allowed
-    ) {
-      setBuyError(
-        freshnessPermission.reason
-      );
-      return;
-    }
-
-    if (
-      contractOpenRef.current
-    ) {
-      setBuyError(
-        'An active contract already exists.'
-      );
-      return;
-    }
-
-    const price =
-      Number(
-        proposalData.ask_price
-      );
-
-    if (
-      !Number.isFinite(price) ||
-      price <= 0
-    ) {
-      setBuyError(
-        'Invalid proposal price.'
-      );
-      return;
-    }
-
-    const ws =
-      tradingWsRef.current;
-
-    if (
-      !ws ||
-      ws.readyState !==
-        WebSocket.OPEN
-    ) {
-      setBuyError(
-        'Trading socket is offline.'
-      );
-      return;
-    }
-
-    if (
-      lifecycleRef.current?.mode !==
-      'manual'
-    ) {
-      lifecycleRef.current =
-        beginTradeLifecycle({
-          mode: 'manual',
-        });
-
-      syncLifecycleLabel();
-    }
-
-    const buyReqId =
-      nextReqId();
-
-    const registration =
-      beginBuyRequest(
-        requestGuardRef.current,
-        {
-          reqId: buyReqId,
-          owner:
-            REQUEST_OWNER.MANUAL,
-          proposalId:
-            proposalData.id,
-        }
-      );
-
-    if (!registration.valid) {
-      setBuyError(
-        registration.reason
-      );
-      return;
-    }
-
-    const pendingRegistration =
-      registerPendingBuy(
-        pendingBuyRecoveryRef.current,
-        {
-          reqId: buyReqId,
-          proposalId:
-            proposalData.id,
-          accountId:
-            accountIdRef.current,
-          accountType:
-            accountTypeRef.current,
-          owner: 'manual',
-          symbol:
-            symbolRef.current,
-          strategy:
-            strategyRef.current,
-          expectedStake: price,
-          startedAt: Date.now(),
-        }
-      );
-
-    if (
-      !pendingRegistration.valid
-    ) {
-      setBuyError(
-        pendingRegistration.reason
-      );
-      return;
-    }
-
-    requestGuardRef.current =
-      registration.guard;
-
-    pendingBuyRecoveryRef.current =
-      pendingRegistration.recovery;
-
-    const persisted =
-      persistPendingBuyRecovery(
-        pendingRegistration.recovery
-      );
-
-    if (!persisted.saved) {
-      setBuyError(
-        'Unable to persist pending BUY safety state.'
-      );
-      return;
-    }
-
-    pendingBuyReconciliationRef.current =
-      clearPendingBuyReconciliation();
-
-    syncStoredPendingBuy();
-    syncRequestStatus();
-    syncPendingBuyRecovery();
-    syncPendingBuyReconciliation();
-
-    buyPendingRef.current = true;
-
-    setBuyLoading(true);
-    setBuyError('');
-
-    ws.send(
-      JSON.stringify({
-        buy: proposalData.id,
-        price,
-        req_id: buyReqId,
-      })
-    );
-  };
-
-  const applySuggestedDigit = () => {
-    const suggestion =
-      getSuggestedDigit(
-        strategy,
-        digitHistoryRef.current
-      );
-
-    setPredictionDigit(
-      String(suggestion)
-    );
-  };
-
-  const changeSymbol = (nextSymbol) => {
-    const pendingPermission =
-      canOpenAfterPendingBuy(
-        pendingBuyRecoveryRef.current
-      );
-
-    if (!pendingPermission.allowed) {
-      setBuyError(
-        pendingPermission.reason
-      );
       return;
     }
 
@@ -5725,13 +6371,18 @@ export default function BinarySpotPro() {
 
     clearManualProposal();
 
-    symbolRef.current = nextSymbol;
+    symbolRef.current =
+      nextSymbol;
 
-    setSymbol(nextSymbol);
+    setSymbol(
+      nextSymbol
+    );
 
-    digitHistoryRef.current = [];
+    digitHistoryRef.current =
+      [];
 
     setDigitHistory([]);
+
     setLastDigit(null);
     setLastTick(null);
     setPrevTick(null);
@@ -5745,116 +6396,200 @@ export default function BinarySpotPro() {
     setUsedPipSize(false);
   };
 
-  const resetSessionStats = () => {
-    const requestStatus =
-      getRequestGuardStatus(
-        requestGuardRef.current
-      );
-
-    const recoveryStatus =
-      getContractRecoveryStatus(
-        recoveryRef.current
-      );
-
-    const pendingStatus =
-      getPendingBuyRecoveryStatus(
-        pendingBuyRecoveryRef.current
-      );
-
+  const selectStrategy = (
+    strategyId
+  ) => {
     if (
       isAutoBotRunning ||
-      contractOpenRef.current ||
-      requestStatus.proposalPending ||
-      requestStatus.buyPending ||
-      pendingStatus.blocking ||
-      (recoveryStatus.hasContract &&
-        !recoveryStatus.settled)
+      contractOpenRef.current
     ) {
       return;
     }
 
-    tradeCountRef.current = 0;
-    totalProfitRef.current = 0;
+    clearManualProposal();
 
-    consecutiveLossesRef.current = 0;
-
-    setTradeCount(0);
-    setWinCount(0);
-    setLossCount(0);
-    setDrawCount(0);
-    setConsecutiveLosses(0);
-    setTotalProfit(0);
-    setTradeHistory([]);
-
-    const base =
-      Number(baseStake) || 1;
-
-    currentStakeRef.current = base;
-
-    setCurrentStake(
-      base.toFixed(2)
+    setStrategy(
+      strategyId
     );
 
-    lifecycleRef.current =
-      createTradeLifecycle();
+    strategyRef.current =
+      strategyId;
 
-    requestGuardRef.current =
-      resetRequestGuard();
-
-    pendingBuyRecoveryRef.current =
-      clearPendingBuyRecovery();
-
-    pendingBuyReconciliationRef.current =
-      clearPendingBuyReconciliation();
-
-    recoveryRef.current =
-      clearContractRecovery();
-
-    recoveryBackoffRef.current =
-      resetRecoveryBackoff(
-        recoveryBackoffRef.current
+    const suggestion =
+      getSuggestedDigit(
+        strategyId,
+        digitHistoryRef.current
       );
 
-    proposalFreshnessRef.current =
-      clearProposalFreshness();
+    if (
+      Number.isInteger(
+        Number(
+          suggestion
+        )
+      )
+    ) {
+      setPredictionDigit(
+        String(
+          suggestion
+        )
+      );
 
-    clearContractRecoveryRecord();
-    clearStoredPendingBuy();
-    clearSessionState();
+      predictionDigitRef.current =
+        String(
+          suggestion
+        );
+    }
 
-    setStoredSessionLabel(
-      'No stored session'
+    const nextSignal =
+      evaluateEntrySignal({
+        strategy:
+          strategyId,
+
+        digitHistory:
+          digitHistoryRef.current,
+
+        predictionDigit:
+          suggestion,
+
+        config: {
+          minimumConfidence:
+            minimumConfidenceRef.current,
+        },
+      });
+
+    setSignal(
+      nextSignal
     );
-
-    syncPersistedRecovery();
-    syncLifecycleLabel();
-    syncRequestStatus();
-    syncPendingBuyRecovery();
-    syncPendingBuyReconciliation();
-    syncRecoveryLabel();
-    syncRecoveryBackoff();
-
-    setBotLogs([]);
-    setProposalData(null);
-    setProposalError('');
-    setBuyError('');
-    setActiveContract(null);
-    setContractProfit(null);
-
-    setSocketErrorLabel(
-      'No socket errors'
-    );
-
-    setContractStatus(
-      'No active contract'
-    );
-
-    setAutoBotStatus('Standby');
   };
+
+  const resetSessionStats =
+    () => {
+      const requestStatus =
+        getRequestGuardStatus(
+          requestGuardRef.current
+        );
+
+      const recoveryStatus =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
+
+      const pendingStatus =
+        getPendingBuyRecoveryStatus(
+          pendingBuyRecoveryRef.current
+        );
+
+      if (
+        isAutoBotRunning ||
+        contractOpenRef.current ||
+        requestStatus.proposalPending ||
+        requestStatus.buyPending ||
+        pendingStatus.blocking ||
+        (
+          recoveryStatus.hasContract &&
+          !recoveryStatus.settled
+        )
+      ) {
+        return;
+      }
+
+      tradeCountRef.current =
+        0;
+
+      totalProfitRef.current =
+        0;
+
+      consecutiveLossesRef.current =
+        0;
+
+      setTradeCount(0);
+      setWinCount(0);
+      setLossCount(0);
+      setDrawCount(0);
+      setConsecutiveLosses(0);
+      setTotalProfit(0);
+      setTradeHistory([]);
+
+      const base =
+        Number(
+          baseStake
+        ) || 1;
+
+      currentStakeRef.current =
+        base;
+
+      setCurrentStake(
+        base.toFixed(2)
+      );
+
+      lifecycleRef.current =
+        createTradeLifecycle();
+
+      requestGuardRef.current =
+        resetRequestGuard();
+
+      pendingBuyRecoveryRef.current =
+        clearPendingBuyRecovery();
+
+      pendingBuyReconciliationRef.current =
+        clearPendingBuyReconciliation();
+
+      recoveryRef.current =
+        clearContractRecovery();
+
+      recoveryBackoffRef.current =
+        resetRecoveryBackoff(
+          recoveryBackoffRef.current
+        );
+
+      proposalFreshnessRef.current =
+        clearProposalFreshness();
+
+      clearContractRecoveryRecord();
+      clearStoredPendingBuy();
+      clearSessionState();
+
+      setStoredSessionLabel(
+        'No stored session'
+      );
+
+      syncPersistedRecovery();
+      syncLifecycleLabel();
+      syncRequestStatus();
+      syncPendingBuyRecovery();
+      syncPendingBuyReconciliation();
+      syncRecoveryLabel();
+      syncRecoveryBackoff();
+
+      setBotLogs([]);
+
+      setProposalData(null);
+      setProposalError('');
+      setBuyError('');
+      setActiveContract(null);
+      setContractProfit(null);
+
+      setSocketErrorLabel(
+        'No socket errors'
+      );
+
+      setContractStatus(
+        'No active contract'
+      );
+
+      setAutoBotStatus(
+        'Standby'
+      );
+    };
 
   const analysis =
     buildDigitAnalysis(
       digitHistory
+    );
+
+  const selectedStrategy =
+    getStrategyById(
+      strategy
     );
 
   const isDemoAccount =
@@ -5877,18 +6612,22 @@ export default function BinarySpotPro() {
     );
 
   const needsPredictionDigit =
-    [
-      'DIGITDIFF',
-      'DIGITMATCH',
-      'DIGITOVER',
-      'DIGITUNDER',
-    ].includes(strategy);
+    nativeStrategies.includes(
+      strategy
+    ) &&
+    barrierContracts.includes(
+      strategy
+    );
 
   const displayQuote =
     formattedTick ||
-    (lastTick !== null
-      ? String(lastTick)
-      : 'Waiting...');
+    (
+      lastTick !== null
+        ? String(
+            lastTick
+          )
+        : 'Waiting...'
+    );
 
   const completedTrades =
     winCount +
@@ -5898,23 +6637,31 @@ export default function BinarySpotPro() {
   const winRate =
     completedTrades > 0
       ? (
-          (winCount /
-            completedTrades) *
+          (
+            winCount /
+            completedTrades
+          ) *
           100
         ).toFixed(1)
       : '0.0';
 
   const sessionStatus =
     buildSessionStatus({
-      running: isAutoBotRunning,
+      running:
+        isAutoBotRunning,
+
       emergencyStopped,
+
       contractOpen:
         isContractOpen,
+
       proposalPending:
         proposalLoading,
+
       buyPending:
         pendingBuyStatus.blocking ||
         buyLoading,
+
       cooldownUntil:
         cooldownUntilRef.current,
     });
@@ -5942,12 +6689,23 @@ export default function BinarySpotPro() {
   const proposalFreshnessStatus =
     getProposalFreshnessStatus(
       proposalFreshnessRef.current,
-      proposalClock || Date.now()
+      proposalClock ||
+        Date.now()
+    );
+
+  const signalExecution =
+    getExecutionFromSignal(
+      signal
+    );
+
+  const signalConfidenceLabel =
+    getConfidenceLabel(
+      signal.confidence
     );
 
   return (
-    <main className="min-h-screen bg-[#080b11] text-slate-100">
-      <div className="border-b border-slate-800 bg-[#0e131d] px-4 py-2.5">
+    <main className="min-h-screen bg-[#070a10] text-slate-100">
+      <div className="border-b border-slate-800 bg-[#0b1018] px-4 py-2.5">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
           <div className="flex flex-wrap items-center gap-4">
             <StatusDot
@@ -6001,7 +6759,7 @@ export default function BinarySpotPro() {
       <header className="border-b border-slate-800 bg-[#0d121c]">
         <div className="max-w-7xl mx-auto px-4 py-4 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <div className="text-lg font-black">
+            <div className="text-xl font-black tracking-tight">
               BINARY
               <span className="text-emerald-400">
                 SPOT
@@ -6009,8 +6767,8 @@ export default function BinarySpotPro() {
               PRO
             </div>
 
-            <p className="text-[9px] uppercase tracking-widest font-bold text-emerald-500">
-              Algorithmic Hub
+            <p className="text-[9px] uppercase tracking-[0.3em] font-bold text-emerald-500">
+              Intelligent Trading Hub
             </p>
           </div>
 
@@ -6018,12 +6776,14 @@ export default function BinarySpotPro() {
             <div className="flex flex-col items-end gap-2">
               <button
                 type="button"
-                onClick={connectDeriv}
+                onClick={
+                  connectDeriv
+                }
                 disabled={
                   isLoading ||
                   isConnecting
                 }
-                className="px-4 py-3 bg-emerald-500 disabled:opacity-40 text-black font-black text-xs rounded-xl"
+                className="px-5 py-3 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-black font-black text-xs rounded-xl transition"
               >
                 {isLoading
                   ? 'CHECKING SESSION...'
@@ -6040,20 +6800,30 @@ export default function BinarySpotPro() {
             </div>
           ) : (
             <AccountCard
-              accounts={accounts}
+              accounts={
+                accounts
+              }
               selectedAccountId={
                 selectedAccountId
               }
               accountType={
                 accountType
               }
-              accountId={accountId}
-              balance={balance}
-              currency={currency}
+              accountId={
+                accountId
+              }
+              balance={
+                balance
+              }
+              currency={
+                currency
+              }
               isTradingConnected={
                 isTradingConnected
               }
-              isLoading={isLoading}
+              isLoading={
+                isLoading
+              }
               isLoggingOut={
                 isLoggingOut
               }
@@ -6068,54 +6838,75 @@ export default function BinarySpotPro() {
         </div>
       </header>
 
-      <div className="border-b border-slate-800 bg-[#0b1019]">
+      <div className="border-b border-slate-800 bg-[#0a0f17] sticky top-0 z-20">
         <div className="max-w-7xl mx-auto px-4 py-2 flex gap-2 overflow-x-auto">
           {[
-            ['overview', '🏠 Overview'],
-            ['bots', '🤖 Bot Studio'],
-            ['history', '📜 History'],
+            [
+              'overview',
+              '🏠 Overview',
+            ],
+            [
+              'bots',
+              '🤖 Bot Studio',
+            ],
+            [
+              'history',
+              '📜 History',
+            ],
             [
               'analyzer',
               '📊 Digit Analyzer',
             ],
-          ].map(([id, label]) => (
-            <button
-              key={id}
-              onClick={() =>
-                setActiveTab(id)
-              }
-              className={`px-4 py-2 rounded-xl text-xs font-black whitespace-nowrap ${
-                activeTab === id
-                  ? 'bg-emerald-500 text-black'
-                  : 'bg-slate-900 border border-slate-800 text-slate-400'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
+          ].map(
+            ([
+              id,
+              label,
+            ]) => (
+              <button
+                key={id}
+                onClick={() =>
+                  setActiveTab(
+                    id
+                  )
+                }
+                className={`px-4 py-2.5 rounded-xl text-xs font-black whitespace-nowrap transition ${
+                  activeTab ===
+                  id
+                    ? 'bg-emerald-500 text-black'
+                    : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
+                }`}
+              >
+                {label}
+              </button>
+            )
+          )}
         </div>
       </div>
 
-      <section className="max-w-7xl mx-auto px-4 py-8">
+      <section className="max-w-7xl mx-auto px-4 py-7">
         {authError && (
-          <Alert>⚠️ {authError}</Alert>
+          <Alert>
+            ⚠️ {authError}
+          </Alert>
         )}
 
         {isAuthorized &&
-          accountType === 'real' && (
-            <div className="mb-6 border border-amber-700 bg-amber-950/20 rounded-2xl p-4">
+          accountType ===
+            'real' && (
+            <div className="mb-6 border border-amber-700/60 bg-amber-950/20 rounded-2xl p-4">
               <p className="font-black text-amber-300 text-sm">
                 REAL ACCOUNT ACTIVE
               </p>
 
               <p className="mt-1 text-xs text-slate-400">
-                Account {accountId} is
-                connected for account
-                display and balance updates.
+                Account{' '}
+                {accountId} is
+                connected for
+                account information
+                and balance updates.
                 BinarySpot contract
-                execution remains blocked
-                until real-money trading is
-                explicitly enabled.
+                execution remains
+                blocked.
               </p>
             </div>
           )}
@@ -6127,23 +6918,31 @@ export default function BinarySpotPro() {
             </p>
 
             <p className="mt-2 text-sm text-slate-300">
-              BinarySpot is protecting the
-              account from duplicate entries
-              while the previous BUY is
+              BinarySpot is
+              protecting the
+              account from duplicate
+              entries while the
+              previous BUY remains
               unresolved.
             </p>
 
             <p className="mt-2 text-xs text-cyan-300">
-              {pendingBuyLabel}
+              {
+                pendingBuyLabel
+              }
             </p>
 
             <p className="mt-1 text-xs text-slate-400">
-              {persistedPendingBuyLabel}
+              {
+                persistedPendingBuyLabel
+              }
             </p>
 
             <div className="mt-4 rounded-xl border border-slate-800 bg-black/20 p-3">
               <p className="text-xs font-black text-cyan-300">
-                {reconciliationLabel}
+                {
+                  reconciliationLabel
+                }
               </p>
 
               {reconciliationReason && (
@@ -6175,77 +6974,208 @@ export default function BinarySpotPro() {
         {activeTab ===
           'overview' && (
           <div className="space-y-6">
-            <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
-              <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                OAuth Account Protection
-              </span>
+            <div className="rounded-3xl border border-slate-800 bg-gradient-to-br from-[#101827] to-[#0a0f17] p-7 md:p-11 overflow-hidden relative">
+              <div className="absolute right-0 top-0 w-72 h-72 bg-emerald-500/5 rounded-full blur-3xl" />
 
-              <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                BinarySpot Keeps Your Deriv Session, Account and BUY Safety State Synchronized.
-              </h1>
+              <div className="relative">
+                <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
+                  BinarySpot Intelligence
+                </span>
 
-              <p className="mt-5 max-w-2xl text-slate-400">
-                Your Deriv OAuth session is
-                restored automatically.
-                Account switching reconnects
-                the authenticated trading
-                socket, refreshes the active
-                balance and keeps Bot Studio
-                tied to the account currently
-                displayed.
-              </p>
+                <h1 className="mt-5 max-w-4xl text-3xl md:text-5xl font-black leading-tight">
+                  Strategy,
+                  execution and
+                  account safety in
+                  one trading hub.
+                </h1>
+
+                <p className="mt-5 max-w-3xl text-sm md:text-base text-slate-400 leading-7">
+                  BinarySpot analyses
+                  Deriv digit markets,
+                  converts advanced
+                  strategies into valid
+                  Deriv contracts and
+                  keeps OAuth,
+                  account switching,
+                  pending BUY safety
+                  and contract recovery
+                  synchronized.
+                </p>
+
+                <div className="mt-7 flex flex-wrap gap-3">
+                  <button
+                    onClick={() =>
+                      setActiveTab(
+                        'bots'
+                      )
+                    }
+                    className="px-5 py-3 rounded-xl bg-emerald-500 text-black text-xs font-black"
+                  >
+                    OPEN BOT STUDIO
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      setActiveTab(
+                        'analyzer'
+                      )
+                    }
+                    className="px-5 py-3 rounded-xl bg-slate-800 border border-slate-700 text-xs font-black"
+                  >
+                    VIEW DIGIT ANALYSIS
+                  </button>
+                </div>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              <StatBox
-                label="Active Account"
-                value={
-                  accountId ||
-                  'Not connected'
-                }
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <DashboardMetric
+                label="Net Session P/L"
+                value={`${totalProfit >= 0 ? '+' : ''}${Number(
+                  totalProfit
+                ).toFixed(2)} ${currency}`}
                 accent={
-                  accountType === 'demo'
-                    ? 'text-cyan-400'
-                    : accountType === 'real'
-                    ? 'text-rose-400'
-                    : 'text-slate-400'
+                  totalProfit >= 0
+                    ? 'text-emerald-400'
+                    : 'text-rose-400'
                 }
               />
 
-              <StatBox
-                label="Account Type"
+              <DashboardMetric
+                label="Settled Trades"
                 value={
-                  accountType
+                  completedTrades
+                }
+              />
+
+              <DashboardMetric
+                label="Win Rate"
+                value={`${winRate}%`}
+                accent="text-cyan-400"
+              />
+
+              <DashboardMetric
+                label="Active Strategy"
+                value={
+                  selectedStrategy?.shortName ||
+                  strategy
+                }
+                accent="text-amber-300"
+              />
+            </div>
+
+            <div className="grid lg:grid-cols-3 gap-5">
+              <Panel className="lg:col-span-2">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-slate-500 font-bold">
+                      Strategy Signal
+                    </p>
+
+                    <h2 className="text-xl font-black mt-1">
+                      {selectedStrategy?.name ||
+                        strategy}
+                    </h2>
+                  </div>
+
+                  <SignalBadge
+                    signal={
+                      signal
+                    }
+                  />
+                </div>
+
+                <div className="grid sm:grid-cols-3 gap-3 mt-5">
+                  <MiniMetric
+                    label="Confidence"
+                    value={`${Number(
+                      signal.confidence ||
+                        0
+                    ).toFixed(
+                      1
+                    )}%`}
+                  />
+
+                  <MiniMetric
+                    label="Signal Quality"
+                    value={
+                      signalConfidenceLabel
+                    }
+                  />
+
+                  <MiniMetric
+                    label="Execution"
+                    value={
+                      signalExecution.valid
+                        ? `${
+                            signalExecution.contractType
+                          }${
+                            signalExecution.predictionDigit !==
+                              null
+                              ? ` / ${signalExecution.predictionDigit}`
+                              : ''
+                          }`
+                        : 'WAIT'
+                    }
+                  />
+                </div>
+
+                <div className="mt-4 border border-slate-800 rounded-xl bg-black/20 p-4">
+                  <p className="text-xs text-slate-400">
+                    {
+                      signal.reason
+                    }
+                  </p>
+                </div>
+              </Panel>
+
+              <Panel>
+                <p className="text-xs uppercase tracking-wider text-slate-500 font-bold">
+                  Account
+                </p>
+
+                <h3 className="text-xl font-black mt-2">
+                  {accountId ||
+                    'Not connected'}
+                </h3>
+
+                <p
+                  className={`mt-1 text-xs font-black ${
+                    accountType ===
+                    'demo'
+                      ? 'text-cyan-400'
+                      : accountType ===
+                        'real'
+                      ? 'text-rose-400'
+                      : 'text-slate-500'
+                  }`}
+                >
+                  {accountType
                     ? accountType.toUpperCase()
-                    : 'NONE'
-                }
-                accent={
-                  accountType === 'demo'
-                    ? 'text-cyan-400'
-                    : accountType === 'real'
-                    ? 'text-rose-400'
-                    : 'text-slate-400'
-                }
-              />
+                    : 'OFFLINE'}
+                </p>
 
-              <StatBox
-                label="Account Balance"
-                value={
-                  balance !== null
+                <p className="text-2xl font-mono font-black text-emerald-400 mt-5">
+                  {balance !==
+                    null
                     ? `${currency} ${Number(
                         balance
                       ).toLocaleString(
                         'en-US',
                         {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
+                          minimumFractionDigits:
+                            2,
+
+                          maximumFractionDigits:
+                            2,
                         }
                       )}`
-                    : 'Loading...'
-                }
-                accent="text-emerald-400"
-              />
+                    : '—'}
+                </p>
+              </Panel>
+            </div>
 
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <StatBox
                 label="Session"
                 value={
@@ -6270,18 +7200,6 @@ export default function BinarySpotPro() {
                 accent={
                   pendingBuyStatus.blocking
                     ? 'text-rose-400'
-                    : 'text-emerald-400'
-                }
-              />
-
-              <StatBox
-                label="Stored BUY"
-                value={
-                  persistedPendingBuyLabel
-                }
-                accent={
-                  pendingBuyStatus.blocking
-                    ? 'text-amber-400'
                     : 'text-emerald-400'
                 }
               />
@@ -6327,7 +7245,7 @@ export default function BinarySpotPro() {
               />
 
               <StatBox
-                label="Socket Error Guard"
+                label="Socket Guard"
                 value={
                   socketErrorLabel
                 }
@@ -6344,7 +7262,9 @@ export default function BinarySpotPro() {
 
               <StatBox
                 label="Tick Precision"
-                value={precisionLabel}
+                value={
+                  precisionLabel
+                }
                 accent="text-emerald-400"
               />
 
@@ -6355,46 +7275,231 @@ export default function BinarySpotPro() {
                 }
                 accent="text-slate-400"
               />
+
+              <StatBox
+                label="Lifecycle"
+                value={
+                  lifecycleLabel
+                }
+                accent="text-slate-400"
+              />
             </div>
           </div>
         )}
 
-        {activeTab === 'bots' && (
+        {activeTab ===
+          'bots' && (
           <div className="space-y-6">
-            <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-6">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-xl font-black">
-                    Bot Studio
-                  </h2>
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.25em] text-emerald-500 font-black">
+                  Strategy Library
+                </p>
 
-                  <p className="mt-2 text-sm text-slate-400">
-                    Execution is bound to the
-                    account currently shown in
-                    the Deriv account card.
-                  </p>
-                </div>
+                <h1 className="text-2xl md:text-3xl font-black mt-2">
+                  Bot Studio
+                </h1>
 
-                <div
-                  className={`rounded-xl border px-3 py-2 text-xs font-black ${
-                    isDemoAccount
-                      ? 'border-cyan-800 bg-cyan-950/20 text-cyan-300'
-                      : 'border-rose-800 bg-rose-950/20 text-rose-300'
-                  }`}
-                >
-                  {isDemoAccount
-                    ? `DEMO EXECUTION — ${accountId}`
-                    : `REAL SELECTED — EXECUTION BLOCKED`}
-                </div>
+                <p className="text-sm text-slate-400 mt-2 max-w-2xl">
+                  Choose how
+                  BinarySpot analyses
+                  the market. Advanced
+                  strategies produce a
+                  separate valid Deriv
+                  execution contract.
+                </p>
               </div>
 
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
+              <div
+                className={`rounded-xl border px-4 py-3 text-xs font-black ${
+                  isDemoAccount
+                    ? 'border-cyan-800 bg-cyan-950/20 text-cyan-300'
+                    : 'border-rose-800 bg-rose-950/20 text-rose-300'
+                }`}
+              >
+                {isDemoAccount
+                  ? `DEMO EXECUTION — ${accountId}`
+                  : 'REAL SELECTED — EXECUTION BLOCKED'}
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {strategyLibrary.map(
+                (item) => (
+                  <StrategyCard
+                    key={
+                      item.id
+                    }
+                    item={
+                      item
+                    }
+                    selected={
+                      strategy ===
+                      item.id
+                    }
+                    disabled={
+                      isAutoBotRunning ||
+                      isContractOpen ||
+                      pendingBuyStatus.blocking
+                    }
+                    onSelect={() =>
+                      selectStrategy(
+                        item.id
+                      )
+                    }
+                  />
+                )
+              )}
+            </div>
+
+            <Panel>
+              <div className="grid lg:grid-cols-3 gap-5">
+                <div className="lg:col-span-2">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <p className="text-xs text-slate-500 uppercase font-bold">
+                        Selected Strategy
+                      </p>
+
+                      <h2 className="text-xl font-black mt-1">
+                        {selectedStrategy?.name ||
+                          strategy}
+                      </h2>
+
+                      <p className="text-sm text-slate-400 mt-2 max-w-xl">
+                        {selectedStrategy?.description ||
+                          'BinarySpot trading strategy'}
+                      </p>
+                    </div>
+
+                    <SignalBadge
+                      signal={
+                        signal
+                      }
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
+                    <MiniMetric
+                      label="Confidence"
+                      value={`${Number(
+                        signal.confidence ||
+                          0
+                      ).toFixed(
+                        1
+                      )}%`}
+                    />
+
+                    <MiniMetric
+                      label="Quality"
+                      value={
+                        signalConfidenceLabel
+                      }
+                    />
+
+                    <MiniMetric
+                      label="Samples"
+                      value={
+                        signal.sampleSize ||
+                        0
+                      }
+                    />
+
+                    <MiniMetric
+                      label="Execution"
+                      value={
+                        signalExecution.valid
+                          ? signalExecution.contractType
+                          : 'WAIT'
+                      }
+                    />
+                  </div>
+
+                  <div className="mt-4 rounded-xl border border-slate-800 bg-black/20 p-4">
+                    <p className="text-xs text-slate-300">
+                      {
+                        signal.reason
+                      }
+                    </p>
+
+                    {signalExecution.valid &&
+                      signalExecution.predictionDigit !==
+                        null && (
+                        <p className="mt-2 text-xs font-mono text-cyan-300">
+                          Execution
+                          barrier:{' '}
+                          {
+                            signalExecution.predictionDigit
+                          }
+                        </p>
+                      )}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-800 bg-[#0a0f17] p-5">
+                  <p className="text-xs uppercase tracking-wider text-slate-500 font-bold">
+                    Bot Status
+                  </p>
+
+                  <p className="text-lg font-black mt-2 break-words">
+                    {
+                      autoBotStatus
+                    }
+                  </p>
+
+                  <div className="mt-5 space-y-2 text-xs">
+                    <StatusRow
+                      label="Market Feed"
+                      active={
+                        isMarketConnected
+                      }
+                    />
+
+                    <StatusRow
+                      label="Trading Socket"
+                      active={
+                        isTradingConnected
+                      }
+                    />
+
+                    <StatusRow
+                      label="Demo Execution"
+                      active={
+                        isDemoAccount
+                      }
+                    />
+
+                    <StatusRow
+                      label="Emergency Stop"
+                      active={
+                        !emergencyStopped
+                      }
+                      activeText="Clear"
+                      inactiveText="ACTIVE"
+                    />
+                  </div>
+                </div>
+              </div>
+            </Panel>
+
+            <Panel>
+              <h2 className="text-lg font-black">
+                Market & Contract
+              </h2>
+
+              <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-5">
                 <Field label="Synthetic Asset">
                   <select
-                    value={symbol}
-                    onChange={(event) =>
+                    value={
+                      symbol
+                    }
+                    onChange={(
+                      event
+                    ) =>
                       changeSymbol(
-                        event.target.value
+                        event
+                          .target
+                          .value
                       )
                     }
                     disabled={
@@ -6419,51 +7524,33 @@ export default function BinarySpotPro() {
                     </option>
 
                     <option value="1HZ100V">
-                      Volatility 100 (1s)
+                      Volatility 100
+                      (1s)
                     </option>
                   </select>
                 </Field>
 
-                <Field label="Strategy">
-                  <select
-                    value={strategy}
-                    onChange={(event) =>
-                      setStrategy(
-                        event.target.value
+                <Field label="Duration (ticks)">
+                  <input
+                    value={
+                      duration
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setDuration(
+                        event
+                          .target
+                          .value
                       )
                     }
                     disabled={
-                      isAutoBotRunning ||
-                      pendingBuyStatus.blocking
+                      isAutoBotRunning
                     }
                     className={
                       INPUT_CLASS
                     }
-                  >
-                    <option value="DIGITDIFF">
-                      Digit Differs
-                    </option>
-
-                    <option value="DIGITMATCH">
-                      Digit Matches
-                    </option>
-
-                    <option value="DIGITEVEN">
-                      Digit Even
-                    </option>
-
-                    <option value="DIGITODD">
-                      Digit Odd
-                    </option>
-
-                    <option value="DIGITOVER">
-                      Digit Over
-                    </option>
-
-                    <option value="DIGITUNDER">
-                      Digit Under
-                    </option>
-                  </select>
+                  />
                 </Field>
 
                 {needsPredictionDigit && (
@@ -6472,10 +7559,17 @@ export default function BinarySpotPro() {
                       value={
                         predictionDigit
                       }
-                      onChange={(event) =>
+                      onChange={(
+                        event
+                      ) =>
                         setPredictionDigit(
-                          event.target.value
+                          event
+                            .target
+                            .value
                         )
+                      }
+                      disabled={
+                        isAutoBotRunning
                       }
                       className={
                         INPUT_CLASS
@@ -6484,14 +7578,81 @@ export default function BinarySpotPro() {
                   </Field>
                 )}
 
-                <Field label="Base Stake">
+                <Field label="Minimum Confidence">
                   <input
-                    value={baseStake}
-                    onChange={(event) =>
-                      setBaseStake(
-                        event.target.value
+                    value={
+                      minimumConfidence
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setMinimumConfidence(
+                        event
+                          .target
+                          .value
                       )
                     }
+                    disabled={
+                      isAutoBotRunning
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  />
+                </Field>
+              </div>
+            </Panel>
+
+            <Panel>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-black">
+                    Risk Management
+                  </h2>
+
+                  <p className="text-xs text-slate-500 mt-1">
+                    Session-level
+                    limits remain active
+                    regardless of
+                    strategy.
+                  </p>
+                </div>
+
+                <span className="text-[10px] font-black rounded-full border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 px-3 py-1">
+                  SAFETY ENGINE
+                </span>
+              </div>
+
+              <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-5">
+                <Field label="Base Stake">
+                  <input
+                    value={
+                      baseStake
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setBaseStake(
+                        event
+                          .target
+                          .value
+                      )
+                    }
+                    disabled={
+                      isAutoBotRunning
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  />
+                </Field>
+
+                <Field label="Current Stake">
+                  <input
+                    value={
+                      currentStake
+                    }
+                    readOnly
                     className={
                       INPUT_CLASS
                     }
@@ -6500,11 +7661,20 @@ export default function BinarySpotPro() {
 
                 <Field label="Maximum Stake">
                   <input
-                    value={maxStake}
-                    onChange={(event) =>
+                    value={
+                      maxStake
+                    }
+                    onChange={(
+                      event
+                    ) =>
                       setMaxStake(
-                        event.target.value
+                        event
+                          .target
+                          .value
                       )
+                    }
+                    disabled={
+                      isAutoBotRunning
                     }
                     className={
                       INPUT_CLASS
@@ -6512,15 +7682,137 @@ export default function BinarySpotPro() {
                   />
                 </Field>
 
-                <Field label="Minimum Confidence">
+                <Field label="Loss Multiplier">
                   <input
                     value={
-                      minimumConfidence
+                      martingale
                     }
-                    onChange={(event) =>
-                      setMinimumConfidence(
-                        event.target.value
+                    onChange={(
+                      event
+                    ) =>
+                      setMartingale(
+                        event
+                          .target
+                          .value
                       )
+                    }
+                    disabled={
+                      isAutoBotRunning
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  />
+                </Field>
+
+                <Field label="Take Profit">
+                  <input
+                    value={
+                      takeProfit
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setTakeProfit(
+                        event
+                          .target
+                          .value
+                      )
+                    }
+                    disabled={
+                      isAutoBotRunning
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  />
+                </Field>
+
+                <Field label="Stop Loss">
+                  <input
+                    value={
+                      stopLoss
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setStopLoss(
+                        event
+                          .target
+                          .value
+                      )
+                    }
+                    disabled={
+                      isAutoBotRunning
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  />
+                </Field>
+
+                <Field label="Max Consecutive Losses">
+                  <input
+                    value={
+                      maxConsecutiveLosses
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setMaxConsecutiveLosses(
+                        event
+                          .target
+                          .value
+                      )
+                    }
+                    disabled={
+                      isAutoBotRunning
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  />
+                </Field>
+
+                <Field label="Maximum Trades">
+                  <input
+                    value={
+                      maxTrades
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setMaxTrades(
+                        event
+                          .target
+                          .value
+                      )
+                    }
+                    disabled={
+                      isAutoBotRunning
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  />
+                </Field>
+
+                <Field label="Cooldown Seconds">
+                  <input
+                    value={
+                      cooldownSeconds
+                    }
+                    onChange={(
+                      event
+                    ) =>
+                      setCooldownSeconds(
+                        event
+                          .target
+                          .value
+                      )
+                    }
+                    disabled={
+                      isAutoBotRunning
                     }
                     className={
                       INPUT_CLASS
@@ -6528,7 +7820,53 @@ export default function BinarySpotPro() {
                   />
                 </Field>
               </div>
+            </Panel>
 
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+              <DashboardMetric
+                label="Net P/L"
+                value={`${totalProfit >= 0 ? '+' : ''}${Number(
+                  totalProfit
+                ).toFixed(2)}`}
+                accent={
+                  totalProfit >=
+                  0
+                    ? 'text-emerald-400'
+                    : 'text-rose-400'
+                }
+              />
+
+              <DashboardMetric
+                label="Trades"
+                value={
+                  tradeCount
+                }
+              />
+
+              <DashboardMetric
+                label="Wins"
+                value={
+                  winCount
+                }
+                accent="text-emerald-400"
+              />
+
+              <DashboardMetric
+                label="Losses"
+                value={
+                  lossCount
+                }
+                accent="text-rose-400"
+              />
+
+              <DashboardMetric
+                label="Win Rate"
+                value={`${winRate}%`}
+                accent="text-cyan-400"
+              />
+            </div>
+
+            <Panel>
               {buyError && (
                 <Alert>
                   ⚠️ {buyError}
@@ -6537,7 +7875,10 @@ export default function BinarySpotPro() {
 
               {proposalError && (
                 <Alert>
-                  ⚠️ {proposalError}
+                  ⚠️{' '}
+                  {
+                    proposalError
+                  }
                 </Alert>
               )}
 
@@ -6547,16 +7888,19 @@ export default function BinarySpotPro() {
                   onClick={
                     clearEmergencyStop
                   }
-                  className="mt-4 w-full py-3 bg-slate-700 text-white font-black rounded-xl"
+                  className="mb-4 w-full py-3 bg-slate-700 text-white font-black rounded-xl"
                 >
-                  CLEAR EMERGENCY STOP
+                  CLEAR EMERGENCY
+                  STOP
                 </button>
               )}
 
-              <div className="grid sm:grid-cols-2 gap-3 mt-6">
+              <div className="grid sm:grid-cols-2 gap-3">
                 {!isAutoBotRunning ? (
                   <button
-                    onClick={startAutoBot}
+                    onClick={
+                      startAutoBot
+                    }
                     disabled={
                       !isDemoAccount ||
                       !isTradingConnected ||
@@ -6565,9 +7909,10 @@ export default function BinarySpotPro() {
                       pendingBuyStatus.blocking ||
                       emergencyStopped
                     }
-                    className="py-4 bg-emerald-500 disabled:opacity-40 text-black font-black rounded-xl"
+                    className="py-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-black font-black rounded-xl transition"
                   >
-                    ▶ START SAFE SIGNAL BOT
+                    ▶ START STRATEGY
+                    BOT
                   </button>
                 ) : (
                   <button
@@ -6583,7 +7928,9 @@ export default function BinarySpotPro() {
                 )}
 
                 <button
-                  onClick={emergencyStop}
+                  onClick={
+                    emergencyStop
+                  }
                   disabled={
                     emergencyStopped
                   }
@@ -6595,180 +7942,607 @@ export default function BinarySpotPro() {
 
               {!isDemoAccount && (
                 <div className="mt-4 rounded-xl border border-rose-800 bg-rose-950/20 p-4 text-xs text-rose-300">
-                  Bot execution is disabled
-                  because the active account
-                  shown above is a Real
-                  account. Switch to a Demo
-                  account to trade.
+                  Bot execution is
+                  disabled because the
+                  active account is a
+                  Real account. Switch
+                  to Demo to execute
+                  contracts.
                 </div>
               )}
 
               {!isAutoBotRunning &&
                 !isContractOpen &&
                 !pendingBuyStatus.blocking && (
-                  <div className="border-t border-slate-800 mt-6 pt-6 grid sm:grid-cols-2 gap-3">
-                    <button
-                      onClick={
-                        requestManualProposal
-                      }
-                      disabled={
-                        proposalLoading ||
-                        !isDemoAccount ||
-                        !isTradingConnected ||
-                        isLoading
-                      }
-                      className="py-3 bg-cyan-500 disabled:opacity-40 text-black font-black rounded-xl"
-                    >
-                      {proposalLoading
-                        ? 'GETTING PROPOSAL...'
-                        : 'GET PROPOSAL'}
-                    </button>
+                  <div className="border-t border-slate-800 mt-6 pt-6">
+                    <p className="text-xs uppercase tracking-wider font-black text-slate-500 mb-3">
+                      Manual Demo Test
+                    </p>
 
-                    <button
-                      onClick={
-                        buyManualDemoProposal
-                      }
-                      disabled={
-                        !isDemoAccount ||
-                        !proposalData ||
-                        !proposalFreshnessStatus.fresh ||
-                        buyLoading
-                      }
-                      className="py-3 bg-amber-400 disabled:opacity-40 text-black font-black rounded-xl"
-                    >
-                      {buyLoading
-                        ? 'BUYING...'
-                        : 'BUY DEMO CONTRACT'}
-                    </button>
+                    <div className="grid sm:grid-cols-2 gap-3">
+                      <button
+                        onClick={
+                          requestManualProposal
+                        }
+                        disabled={
+                          proposalLoading ||
+                          !isDemoAccount ||
+                          !isTradingConnected ||
+                          isLoading
+                        }
+                        className="py-3 bg-cyan-500 disabled:opacity-40 text-black font-black rounded-xl"
+                      >
+                        {proposalLoading
+                          ? 'GETTING PROPOSAL...'
+                          : isAdvancedStrategy(
+                              strategy
+                            )
+                          ? 'GET STRATEGY PROPOSAL'
+                          : 'GET PROPOSAL'}
+                      </button>
+
+                      <button
+                        onClick={
+                          buyManualDemoProposal
+                        }
+                        disabled={
+                          !isDemoAccount ||
+                          !proposalData ||
+                          !proposalFreshnessStatus.fresh ||
+                          buyLoading
+                        }
+                        className="py-3 bg-amber-400 disabled:opacity-40 text-black font-black rounded-xl"
+                      >
+                        {buyLoading
+                          ? 'BUYING...'
+                          : 'BUY DEMO CONTRACT'}
+                      </button>
+                    </div>
                   </div>
                 )}
+
+              {proposalData && (
+                <div className="mt-5 border border-cyan-900/60 bg-cyan-950/10 rounded-2xl p-4">
+                  <p className="text-xs font-black text-cyan-300">
+                    DERIV PROPOSAL
+                  </p>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                    <MiniMetric
+                      label="Ask Price"
+                      value={`${currency} ${proposalData.ask_price ?? '—'}`}
+                    />
+
+                    <MiniMetric
+                      label="Payout"
+                      value={`${proposalData.payout ?? '—'}`}
+                    />
+
+                    <MiniMetric
+                      label="Spot"
+                      value={`${proposalData.spot ?? '—'}`}
+                    />
+
+                    <MiniMetric
+                      label="Freshness"
+                      value={
+                        proposalFreshnessStatus.label
+                      }
+                    />
+                  </div>
+                </div>
+              )}
 
               {activeContract && (
                 <div className="mt-6 border border-amber-500/30 bg-amber-500/5 rounded-2xl p-5">
                   <p className="text-xs text-amber-400 font-black">
                     CONTRACT #
-                    {activeContract.contractId}
+                    {
+                      activeContract.contractId
+                    }
                   </p>
 
-                  <p className="mt-2 font-black">
-                    {contractStatus}
+                  <p className="mt-2 text-xl font-black">
+                    {
+                      contractStatus
+                    }
                   </p>
 
-                  <p className="mt-2 font-mono text-emerald-400">
+                  {activeContract.contractType && (
+                    <p className="mt-1 text-xs text-slate-400 font-mono">
+                      {
+                        activeContract.contractType
+                      }
+                    </p>
+                  )}
+
+                  <p
+                    className={`mt-3 font-mono text-xl font-black ${
+                      Number(
+                        contractProfit
+                      ) >= 0
+                        ? 'text-emerald-400'
+                        : 'text-rose-400'
+                    }`}
+                  >
                     P/L:{' '}
                     {contractProfit !==
                     null
                       ? Number(
                           contractProfit
-                        ).toFixed(2)
+                        ).toFixed(
+                          2
+                        )
                       : '-'}
                   </p>
                 </div>
               )}
-            </div>
+            </Panel>
+
+            <Panel>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-black">
+                    Bot Activity
+                  </h2>
+
+                  <p className="text-xs text-slate-500 mt-1">
+                    Latest strategy,
+                    proposal, BUY and
+                    safety events.
+                  </p>
+                </div>
+              </div>
+
+              {botLogs.length ===
+              0 ? (
+                <p className="text-center text-sm text-slate-600 py-10">
+                  No bot activity yet.
+                </p>
+              ) : (
+                <div className="mt-4 space-y-2 max-h-[380px] overflow-y-auto">
+                  {botLogs.map(
+                    (
+                      log,
+                      index
+                    ) => (
+                      <div
+                        key={`${log.time}-${index}`}
+                        className="flex gap-3 border border-slate-800 bg-[#090d14] rounded-xl p-3"
+                      >
+                        <span className="text-[10px] font-mono text-slate-600 shrink-0">
+                          {
+                            log.time
+                          }
+                        </span>
+
+                        <span
+                          className={`text-xs ${
+                            log.type ===
+                            'success'
+                              ? 'text-emerald-400'
+                              : log.type ===
+                                'error'
+                              ? 'text-rose-400'
+                              : log.type ===
+                                'trade'
+                              ? 'text-cyan-300'
+                              : 'text-slate-400'
+                          }`}
+                        >
+                          {
+                            log.message
+                          }
+                        </span>
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+            </Panel>
           </div>
         )}
 
-        {activeTab === 'history' && (
-          <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-6">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-black">
-                  Session Trade History
-                </h2>
-
-                <p className="mt-1 text-xs text-slate-400">
-                  Win rate {winRate}% ·{' '}
-                  {completedTrades} settled
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={
-                  resetSessionStats
+        {activeTab ===
+          'history' && (
+          <div className="space-y-5">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <DashboardMetric
+                label="Trades"
+                value={
+                  completedTrades
                 }
-                className="px-3 py-2 rounded-xl bg-slate-800 text-xs font-black"
-              >
-                RESET SESSION
-              </button>
+              />
+
+              <DashboardMetric
+                label="Wins"
+                value={
+                  winCount
+                }
+                accent="text-emerald-400"
+              />
+
+              <DashboardMetric
+                label="Losses"
+                value={
+                  lossCount
+                }
+                accent="text-rose-400"
+              />
+
+              <DashboardMetric
+                label="Win Rate"
+                value={`${winRate}%`}
+                accent="text-cyan-400"
+              />
             </div>
 
-            {tradeHistory.length ===
-            0 ? (
-              <p className="py-14 text-center text-slate-500">
-                No settled contracts yet.
-              </p>
-            ) : (
-              <div className="mt-6 space-y-3">
-                {tradeHistory.map(
-                  (trade) => (
-                    <div
-                      key={trade.id}
-                      className="border border-slate-800 rounded-xl p-4"
-                    >
-                      <p className="font-mono">
-                        #{trade.id} —{' '}
-                        {trade.result} —{' '}
-                        {trade.profit}
-                        {trade.recovered
-                          ? ' — RECOVERED'
-                          : ''}
-                      </p>
-                    </div>
-                  )
-                )}
+            <Panel>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-black">
+                    Session Trade
+                    History
+                  </h2>
+
+                  <p className="mt-1 text-xs text-slate-400">
+                    {completedTrades}{' '}
+                    settled · Net{' '}
+                    {totalProfit >=
+                    0
+                      ? '+'
+                      : ''}
+                    {Number(
+                      totalProfit
+                    ).toFixed(
+                      2
+                    )}{' '}
+                    {currency}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={
+                    resetSessionStats
+                  }
+                  className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-xs font-black"
+                >
+                  RESET SESSION
+                </button>
               </div>
-            )}
+
+              {tradeHistory.length ===
+              0 ? (
+                <p className="py-14 text-center text-slate-500">
+                  No settled
+                  contracts yet.
+                </p>
+              ) : (
+                <div className="mt-6 space-y-3">
+                  {tradeHistory.map(
+                    (
+                      trade
+                    ) => (
+                      <div
+                        key={
+                          trade.id
+                        }
+                        className="border border-slate-800 bg-[#090d14] rounded-xl p-4 flex flex-wrap items-center justify-between gap-4"
+                      >
+                        <div>
+                          <p className="font-mono text-sm font-black">
+                            #
+                            {
+                              trade.id
+                            }
+                          </p>
+
+                          <p className="text-xs text-slate-500 mt-1">
+                            {
+                              trade.strategy
+                            }
+                            {trade.contractType
+                              ? ` → ${trade.contractType}`
+                              : ''}
+                            {' · '}
+                            {
+                              trade.symbol
+                            }
+                            {' · '}
+                            {
+                              trade.time
+                            }
+                          </p>
+                        </div>
+
+                        <div className="text-right">
+                          <p
+                            className={`font-black ${
+                              trade.result ===
+                              'won'
+                                ? 'text-emerald-400'
+                                : trade.result ===
+                                  'lost'
+                                ? 'text-rose-400'
+                                : 'text-slate-300'
+                            }`}
+                          >
+                            {String(
+                              trade.result
+                            ).toUpperCase()}
+                          </p>
+
+                          <p className="font-mono text-sm mt-1">
+                            {Number(
+                              trade.profit
+                            ) >= 0
+                              ? '+'
+                              : ''}
+                            {Number(
+                              trade.profit
+                            ).toFixed(
+                              2
+                            )}
+                          </p>
+
+                          {trade.recovered && (
+                            <p className="text-[9px] text-cyan-400 font-black mt-1">
+                              RECOVERED
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+            </Panel>
           </div>
         )}
 
         {activeTab ===
           'analyzer' && (
-          <div className="bg-[#0f1522] border border-slate-800 p-6 rounded-2xl">
-            <div className="flex flex-wrap justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-black">
-                  Digit Analyzer
-                </h2>
+          <div className="space-y-5">
+            <Panel>
+              <div className="flex flex-wrap justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-wider text-emerald-500 font-black">
+                    Market
+                    Intelligence
+                  </p>
 
-                <p className="text-xs text-slate-400 mt-2">
-                  {analysis.sampleSize}{' '}
-                  recent ticks
-                </p>
+                  <h2 className="text-2xl font-black mt-1">
+                    Digit Analyzer
+                  </h2>
+
+                  <p className="text-xs text-slate-400 mt-2">
+                    {
+                      analysis.sampleSize
+                    }{' '}
+                    recent ticks
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={
+                    applySuggestedDigit
+                  }
+                  className="px-4 py-2 rounded-xl bg-cyan-500 text-black text-xs font-black"
+                >
+                  USE SUGGESTED
+                  DIGIT
+                </button>
               </div>
 
-              <button
-                type="button"
-                onClick={
-                  applySuggestedDigit
+              <div className="grid grid-cols-5 sm:grid-cols-10 gap-2 mt-6">
+                {analysis.percentages.map(
+                  (
+                    item
+                  ) => (
+                    <div
+                      key={
+                        item.digit
+                      }
+                      className={`border rounded-xl p-3 text-center ${
+                        analysis.mostFrequent?.digit ===
+                        item.digit
+                          ? 'border-emerald-500/50 bg-emerald-500/10'
+                          : analysis.leastFrequent?.digit ===
+                            item.digit
+                          ? 'border-cyan-500/40 bg-cyan-500/5'
+                          : 'bg-[#080b11] border-slate-800'
+                      }`}
+                    >
+                      <p className="font-black text-lg">
+                        {
+                          item.digit
+                        }
+                      </p>
+
+                      <p className="text-xs text-cyan-400 mt-2">
+                        {
+                          item.percentage
+                        }
+                        %
+                      </p>
+
+                      <p
+                        className={`text-[9px] mt-1 ${
+                          item.deviation >
+                          0
+                            ? 'text-emerald-400'
+                            : item.deviation <
+                              0
+                            ? 'text-rose-400'
+                            : 'text-slate-500'
+                        }`}
+                      >
+                        {item.deviation >
+                        0
+                          ? '+'
+                          : ''}
+                        {
+                          item.deviation
+                        }
+                      </p>
+                    </div>
+                  )
+                )}
+              </div>
+            </Panel>
+
+            <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <DashboardMetric
+                label="Distribution Quality"
+                value={`${analysis.distributionQuality ?? 0}%`}
+                accent="text-emerald-400"
+              />
+
+              <DashboardMetric
+                label="Most Frequent"
+                value={`${
+                  analysis.mostFrequent?.digit ??
+                  '-'
+                } · ${
+                  analysis.mostFrequent?.percentage ??
+                  0
+                }%`}
+                accent="text-emerald-400"
+              />
+
+              <DashboardMetric
+                label="Least Frequent"
+                value={`${
+                  analysis.leastFrequent?.digit ??
+                  '-'
+                } · ${
+                  analysis.leastFrequent?.percentage ??
+                  0
+                }%`}
+                accent="text-cyan-400"
+              />
+
+              <DashboardMetric
+                label="Parity Streak"
+                value={
+                  analysis.streak
+                    ?.type
+                    ? `${analysis.streak.type.toUpperCase()} × ${analysis.streak.length}`
+                    : 'NONE'
                 }
-                className="px-4 py-2 rounded-xl bg-cyan-500 text-black text-xs font-black"
-              >
-                USE SUGGESTED DIGIT
-              </button>
+                accent="text-amber-300"
+              />
             </div>
 
-            <div className="grid grid-cols-5 sm:grid-cols-10 gap-2 mt-6">
-              {analysis.percentages.map(
-                (item) => (
-                  <div
-                    key={item.digit}
-                    className="bg-[#080b11] border border-slate-800 rounded-xl p-3 text-center"
-                  >
-                    <p className="font-black">
-                      {item.digit}
-                    </p>
+            <div className="grid md:grid-cols-2 gap-5">
+              <Panel>
+                <h3 className="font-black">
+                  Even / Odd
+                  Distribution
+                </h3>
 
-                    <p className="text-xs text-cyan-400 mt-2">
-                      {
-                        item.percentage
-                      }
-                      %
-                    </p>
-                  </div>
-                )
-              )}
+                <div className="grid grid-cols-2 gap-3 mt-4">
+                  <MiniMetric
+                    label="Even"
+                    value={`${analysis.evenOdd?.evenPercentage ?? 0}%`}
+                  />
+
+                  <MiniMetric
+                    label="Odd"
+                    value={`${analysis.evenOdd?.oddPercentage ?? 0}%`}
+                  />
+                </div>
+              </Panel>
+
+              <Panel>
+                <h3 className="font-black">
+                  Hot / Cold
+                  Analysis
+                </h3>
+
+                <div className="grid grid-cols-2 gap-3 mt-4">
+                  <MiniMetric
+                    label="Hot Digit"
+                    value={
+                      analysis.hotCold?.hotDigit ??
+                      '—'
+                    }
+                  />
+
+                  <MiniMetric
+                    label="Cold Digit"
+                    value={
+                      analysis.hotCold?.coldDigit ??
+                      '—'
+                    }
+                  />
+                </div>
+
+                <p className="text-xs text-slate-500 mt-4">
+                  {
+                    analysis.hotCold?.reason
+                  }
+                </p>
+              </Panel>
+
+              <Panel>
+                <h3 className="font-black">
+                  Momentum
+                </h3>
+
+                <div className="grid grid-cols-2 gap-3 mt-4">
+                  <MiniMetric
+                    label="Direction"
+                    value={
+                      analysis.momentum?.direction ||
+                      'WAIT'
+                    }
+                  />
+
+                  <MiniMetric
+                    label="Confidence"
+                    value={`${analysis.momentum?.confidence ?? 0}%`}
+                  />
+                </div>
+
+                <p className="text-xs text-slate-500 mt-4">
+                  {
+                    analysis.momentum?.reason
+                  }
+                </p>
+              </Panel>
+
+              <Panel>
+                <h3 className="font-black">
+                  Mean Reversion
+                </h3>
+
+                <div className="grid grid-cols-2 gap-3 mt-4">
+                  <MiniMetric
+                    label="Overextended"
+                    value={
+                      analysis.meanReversion?.overextendedDigit ??
+                      '—'
+                    }
+                  />
+
+                  <MiniMetric
+                    label="Underrepresented"
+                    value={
+                      analysis.meanReversion?.underrepresentedDigit ??
+                      '—'
+                    }
+                  />
+                </div>
+
+                <p className="text-xs text-slate-500 mt-4">
+                  {
+                    analysis.meanReversion?.reason
+                  }
+                </p>
+              </Panel>
             </div>
           </div>
         )}
@@ -6788,6 +8562,175 @@ function Field({
       </label>
 
       {children}
+    </div>
+  );
+}
+
+function Panel({
+  children,
+  className = '',
+}) {
+  return (
+    <div
+      className={`bg-[#0e1420] border border-slate-800 rounded-2xl p-5 md:p-6 ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function MiniMetric({
+  label,
+  value,
+}) {
+  return (
+    <div className="border border-slate-800 bg-[#090d14] rounded-xl p-3">
+      <p className="text-[9px] uppercase tracking-wider text-slate-500 font-bold">
+        {label}
+      </p>
+
+      <p className="mt-1 text-sm font-black font-mono break-words">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function DashboardMetric({
+  label,
+  value,
+  accent = 'text-white',
+}) {
+  return (
+    <div className="bg-[#0e1420] border border-slate-800 rounded-2xl p-4">
+      <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+        {label}
+      </p>
+
+      <p
+        className={`mt-2 text-lg md:text-xl font-black font-mono break-words ${accent}`}
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function StrategyCard({
+  item,
+  selected,
+  disabled,
+  onSelect,
+}) {
+  const riskClass =
+    item.risk === 'High'
+      ? 'text-rose-300 border-rose-800/50 bg-rose-950/20'
+      : item.risk ===
+        'Moderate'
+      ? 'text-amber-300 border-amber-800/50 bg-amber-950/20'
+      : 'text-cyan-300 border-cyan-800/50 bg-cyan-950/20';
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      disabled={
+        disabled
+      }
+      className={`text-left rounded-2xl border p-5 transition disabled:opacity-50 ${
+        selected
+          ? 'border-emerald-500 bg-emerald-500/10 shadow-[0_0_0_1px_rgba(16,185,129,0.1)]'
+          : 'border-slate-800 bg-[#0e1420] hover:border-slate-700'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-black">
+            {item.name}
+          </p>
+
+          <p className="text-[10px] uppercase tracking-wider text-slate-500 mt-1">
+            {
+              item.category
+            }
+          </p>
+        </div>
+
+        {item.recommended && (
+          <span className="text-[8px] font-black bg-emerald-500 text-black rounded-full px-2 py-1">
+            RECOMMENDED
+          </span>
+        )}
+      </div>
+
+      <p className="text-xs text-slate-400 mt-4 leading-5">
+        {
+          item.description
+        }
+      </p>
+
+      <div className="flex items-center justify-between gap-3 mt-5">
+        <span
+          className={`text-[9px] font-black rounded-full border px-2 py-1 ${riskClass}`}
+        >
+          {item.risk}
+        </span>
+
+        <span className="text-[9px] text-slate-500">
+          {item.minimumSamples}{' '}
+          ticks+
+        </span>
+      </div>
+    </button>
+  );
+}
+
+function SignalBadge({
+  signal,
+}) {
+  const qualified =
+    Boolean(
+      signal?.shouldTrade
+    );
+
+  return (
+    <span
+      className={`rounded-full border px-3 py-1.5 text-[10px] font-black ${
+        qualified
+          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
+          : 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+      }`}
+    >
+      {qualified
+        ? 'QUALIFIED SIGNAL'
+        : 'WAITING'}
+    </span>
+  );
+}
+
+function StatusRow({
+  label,
+  active,
+  activeText = 'Active',
+  inactiveText = 'Offline',
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-slate-800/70 pb-2">
+      <span className="text-slate-500">
+        {label}
+      </span>
+
+      <span
+        className={`font-black ${
+          active
+            ? 'text-emerald-400'
+            : 'text-rose-400'
+        }`}
+      >
+        {active
+          ? activeText
+          : inactiveText}
+      </span>
     </div>
   );
 }
@@ -6874,12 +8817,15 @@ function AccountCard({
 
       const rawType =
         String(
-          account.type || ''
+          account.type ||
+          ''
         ).toLowerCase();
 
       const isDemo =
-        rawType === 'demo' ||
-        rawType === 'virtual';
+        rawType ===
+          'demo' ||
+        rawType ===
+          'virtual';
 
       const typeLabel =
         isDemo
@@ -6907,15 +8853,19 @@ function AccountCard({
             accountId ||
             ''
           }
-          onChange={(event) =>
+          onChange={(
+            event
+          ) =>
             onSwitchAccount?.(
-              event.target.value
+              event.target
+                .value
             )
           }
           disabled={
             isLoading ||
             isLoggingOut ||
-            safeAccounts.length <= 1
+            safeAccounts.length <=
+              1
           }
           className="mt-1 w-full bg-[#080b11] text-xs font-black text-slate-100 outline-none disabled:opacity-50"
         >
@@ -6923,7 +8873,8 @@ function AccountCard({
           0 ? (
             <option
               value={
-                accountId || ''
+                accountId ||
+                ''
               }
             >
               {accountId
@@ -6936,7 +8887,9 @@ function AccountCard({
             </option>
           ) : (
             safeAccounts.map(
-              (account) => {
+              (
+                account
+              ) => {
                 const id =
                   account.id ||
                   account.loginid ||
@@ -6944,8 +8897,12 @@ function AccountCard({
 
                 return (
                   <option
-                    key={id}
-                    value={id}
+                    key={
+                      id
+                    }
+                    value={
+                      id
+                    }
                   >
                     {
                       accountOptionLabel(
@@ -6960,13 +8917,14 @@ function AccountCard({
         </select>
 
         <p className="mt-1 text-[9px] text-slate-500">
-          {safeAccounts.length > 1
+          {safeAccounts.length >
+          1
             ? `${safeAccounts.length} accounts available`
             : 'Current OAuth account'}
         </p>
       </div>
 
-      <div className="min-w-[180px] border border-slate-700 rounded-xl px-3 py-2 text-right">
+      <div className="min-w-[185px] border border-slate-700 rounded-xl px-3 py-2 text-right bg-[#080b11]">
         <div className="flex items-center justify-end gap-2">
           <span
             className={`h-2 w-2 rounded-full ${
@@ -6997,16 +8955,22 @@ function AccountCard({
         </p>
 
         <p className="text-sm font-black font-mono text-emerald-400">
-          {currency || 'USD'}{' '}
-          {balance !== null &&
-          balance !== undefined
+          {currency ||
+            'USD'}{' '}
+          {balance !==
+            null &&
+          balance !==
+            undefined
             ? Number(
                 balance
               ).toLocaleString(
                 'en-US',
                 {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
+                  minimumFractionDigits:
+                    2,
+
+                  maximumFractionDigits:
+                    2,
                 }
               )
             : '—'}
@@ -7031,7 +8995,9 @@ function AccountCard({
 
       <button
         type="button"
-        onClick={onLogout}
+        onClick={
+          onLogout
+        }
         disabled={
           isLoading ||
           isLoggingOut
