@@ -99,6 +99,14 @@ import {
   getSocketErrorActionLabel,
 } from '../lib/socketErrorGuard';
 
+import {
+  persistLiveContractRecovery,
+  loadContractRecoveryRecord,
+  clearContractRecoveryRecord,
+  canRestoreStoredContract,
+  getStoredRecoveryStatus,
+} from '../lib/contractRecoveryStorage';
+
 const CLIENT_ID =
   '34hh45FQkPfMgbgj20uoR';
 
@@ -334,6 +342,11 @@ export default function BinarySpotPro() {
     recoveryLabel,
     setRecoveryLabel,
   ] = useState('No recovery needed');
+
+  const [
+    persistedRecoveryLabel,
+    setPersistedRecoveryLabel,
+  ] = useState('No persisted contract');
 
   const [
     recoveryBackoffUi,
@@ -611,6 +624,32 @@ export default function BinarySpotPro() {
         getRecoveryBackoffStatus(
           recoveryBackoffRef.current
         )
+      );
+    }, []);
+
+  const syncPersistedRecovery =
+    useCallback(() => {
+      const stored =
+        loadContractRecoveryRecord();
+
+      if (
+        !stored.found ||
+        !stored.valid ||
+        !stored.record
+      ) {
+        setPersistedRecoveryLabel(
+          'No persisted contract'
+        );
+        return;
+      }
+
+      const status =
+        getStoredRecoveryStatus(
+          stored.record
+        );
+
+      setPersistedRecoveryLabel(
+        status.label
       );
     }, []);
 
@@ -1770,10 +1809,6 @@ export default function BinarySpotPro() {
             const data =
               JSON.parse(event.data);
 
-            // ==================================================
-            // CLASSIFIED DERIV ERROR HANDLING
-            // ==================================================
-
             if (data.error) {
               const message =
                 data.error.message ||
@@ -1786,10 +1821,6 @@ export default function BinarySpotPro() {
 
               let matchedBuy = false;
               let buyOwner = '';
-
-              // ----------------------------------------------
-              // Resolve proposal ownership first.
-              // ----------------------------------------------
 
               if (
                 data.echo_req?.proposal ===
@@ -1836,10 +1867,6 @@ export default function BinarySpotPro() {
                   syncRequestStatus();
                 }
               }
-
-              // ----------------------------------------------
-              // Resolve BUY ownership first.
-              // ----------------------------------------------
 
               if (data.echo_req?.buy) {
                 const resolved =
@@ -1914,10 +1941,6 @@ export default function BinarySpotPro() {
                 'error'
               );
 
-              // ----------------------------------------------
-              // Contract monitor errors require recovery.
-              // ----------------------------------------------
-
               if (
                 classification.action ===
                 SOCKET_ERROR_ACTION.RECOVER_CONTRACT
@@ -1962,10 +1985,6 @@ export default function BinarySpotPro() {
                 return;
               }
 
-              // ----------------------------------------------
-              // Only critical auto proposal / BUY errors stop bot.
-              // ----------------------------------------------
-
               if (
                 classification.action ===
                   SOCKET_ERROR_ACTION.STOP_BOT &&
@@ -1975,11 +1994,6 @@ export default function BinarySpotPro() {
                 stopAutoBot(message);
                 return;
               }
-
-              // ----------------------------------------------
-              // Balance / forget / ping / stale / unknown errors
-              // are logged without stopping the bot.
-              // ----------------------------------------------
 
               return;
             }
@@ -2311,6 +2325,44 @@ export default function BinarySpotPro() {
 
                 syncRecoveryLabel();
                 syncRecoveryBackoff();
+
+                if (
+                  accountTypeRef.current ===
+                  'demo'
+                ) {
+                  const persisted =
+                    persistLiveContractRecovery(
+                      {
+                        contractId,
+                        accountId:
+                          accountIdRef.current,
+                        accountType:
+                          accountTypeRef.current,
+                        owner:
+                          isAutoOwner(owner)
+                            ? 'auto'
+                            : 'manual',
+                        symbol:
+                          symbolRef.current,
+                        createdAt:
+                          Date.now(),
+                      }
+                    );
+
+                  if (persisted.saved) {
+                    syncPersistedRecovery();
+
+                    addBotLog(
+                      `Contract #${contractId} recovery identity persisted for refresh protection.`,
+                      'system'
+                    );
+                  } else {
+                    addBotLog(
+                      `Persistence warning: ${persisted.reason}`,
+                      'error'
+                    );
+                  }
+                }
               } else {
                 addBotLog(
                   `Recovery registration warning: ${recoveryRegistration.reason}`,
@@ -2482,6 +2534,9 @@ export default function BinarySpotPro() {
                   recoveryBackoffRef.current
                 );
 
+              clearContractRecoveryRecord();
+              syncPersistedRecovery();
+
               syncRecoveryLabel();
               syncRecoveryBackoff();
 
@@ -2497,6 +2552,11 @@ export default function BinarySpotPro() {
                 String(
                   finalStatus
                 ).toUpperCase()
+              );
+
+              addBotLog(
+                `Contract #${contract.contract_id} settlement confirmed. Persisted recovery record cleared.`,
+                'system'
               );
 
               if (
@@ -2671,6 +2731,7 @@ export default function BinarySpotPro() {
         registerRecoveryFailure,
         stopAutoBot,
         syncLifecycleLabel,
+        syncPersistedRecovery,
         syncRecoveryBackoff,
         syncRecoveryLabel,
         syncRequestStatus,
@@ -2759,6 +2820,15 @@ export default function BinarySpotPro() {
         ) {
           throw new Error(
             'Recovery session returned the wrong Deriv account.'
+          );
+        }
+
+        if (
+          data.account.type !==
+          'demo'
+        ) {
+          throw new Error(
+            'Persistent recovery is restricted to demo accounts.'
           );
         }
 
@@ -2906,23 +2976,29 @@ export default function BinarySpotPro() {
             return;
           }
 
+          const nextAccountId =
+            data.account.id || '';
+
+          const nextAccountType =
+            data.account.type || '';
+
           setAccountId(
-            data.account.id || ''
+            nextAccountId
           );
 
           accountIdRef.current =
-            data.account.id || '';
+            nextAccountId;
 
           setSelectedAccountId(
-            data.account.id || ''
+            nextAccountId
           );
 
           setAccountType(
-            data.account.type || ''
+            nextAccountType
           );
 
           accountTypeRef.current =
-            data.account.type || '';
+            nextAccountType;
 
           setBalance(
             data.account.balance ??
@@ -2977,7 +3053,6 @@ export default function BinarySpotPro() {
 
           syncLifecycleLabel();
           syncRequestStatus();
-          syncRecoveryLabel();
           syncRecoveryBackoff();
 
           setSocketErrorLabel(
@@ -2994,6 +3069,143 @@ export default function BinarySpotPro() {
           setContractStatus(
             'No active contract'
           );
+
+          // ================================================
+          // RESTORE PERSISTED DEMO CONTRACT
+          // ================================================
+
+          const stored =
+            loadContractRecoveryRecord();
+
+          if (
+            stored.found &&
+            stored.valid &&
+            stored.record
+          ) {
+            const restorePermission =
+              canRestoreStoredContract(
+                stored.record,
+                {
+                  accountId:
+                    nextAccountId,
+                  accountType:
+                    nextAccountType,
+                }
+              );
+
+            if (
+              restorePermission.allowed
+            ) {
+              const record =
+                restorePermission.record;
+
+              const registration =
+                registerLiveContract(
+                  createContractRecovery(),
+                  {
+                    contractId:
+                      record.contractId,
+                    accountId:
+                      record.accountId,
+                    owner:
+                      record.owner,
+                  }
+                );
+
+              if (
+                registration.valid
+              ) {
+                recoveryRef.current =
+                  markContractDisconnected(
+                    registration.recovery
+                  );
+
+                contractOpenRef.current =
+                  true;
+
+                setActiveContract({
+                  contractId:
+                    record.contractId,
+                  isSold: false,
+                });
+
+                setContractProfit(null);
+
+                setContractStatus(
+                  'RECOVERY REQUIRED'
+                );
+
+                if (record.symbol) {
+                  symbolRef.current =
+                    record.symbol;
+
+                  setSymbol(
+                    record.symbol
+                  );
+                }
+
+                if (
+                  record.owner ===
+                  'auto'
+                ) {
+                  lifecycleRef.current =
+                    beginTradeLifecycle({
+                      mode: 'auto',
+                    });
+                } else {
+                  lifecycleRef.current =
+                    beginTradeLifecycle({
+                      mode: 'manual',
+                    });
+                }
+
+                lifecycleRef.current =
+                  attachContractToLifecycle(
+                    lifecycleRef.current,
+                    record.contractId
+                  );
+
+                syncLifecycleLabel();
+                syncRecoveryLabel();
+
+                addBotLog(
+                  `Refresh recovery restored contract #${record.contractId}. Automated trading remains stopped until settlement.`,
+                  'system'
+                );
+
+                setAutoBotStatus(
+                  'Persisted contract recovery'
+                );
+              } else {
+                addBotLog(
+                  `Stored contract could not be registered: ${registration.reason}`,
+                  'error'
+                );
+              }
+            } else {
+              recoveryRef.current =
+                clearContractRecovery();
+
+              contractOpenRef.current =
+                false;
+
+              syncRecoveryLabel();
+
+              if (
+                stored.record.accountId ===
+                nextAccountId
+              ) {
+                addBotLog(
+                  `Stored recovery was not restored: ${restorePermission.reason}`,
+                  'error'
+                );
+              }
+            }
+          } else {
+            syncRecoveryLabel();
+          }
+
+          syncPersistedRecovery();
 
           if (data.wsUrl) {
             connectTradingSocket(
@@ -3019,10 +3231,12 @@ export default function BinarySpotPro() {
         }
       },
       [
+        addBotLog,
         clearRecoveryTimer,
         closeTradingSocket,
         connectTradingSocket,
         syncLifecycleLabel,
+        syncPersistedRecovery,
         syncRecoveryBackoff,
         syncRecoveryLabel,
         syncRequestStatus,
@@ -3058,6 +3272,7 @@ export default function BinarySpotPro() {
       );
     }
 
+    syncPersistedRecovery();
     loadDerivSession();
 
     return () => {
@@ -3068,6 +3283,7 @@ export default function BinarySpotPro() {
     clearRecoveryTimer,
     closeTradingSocket,
     loadDerivSession,
+    syncPersistedRecovery,
   ]);
 
   const switchAccount =
@@ -3554,7 +3770,7 @@ export default function BinarySpotPro() {
     );
 
     addBotLog(
-      `SOCKET ERROR GUARD ACTIVE — ${strategy}`,
+      `PERSISTENT RECOVERY ACTIVE — ${strategy}`,
       'system'
     );
 
@@ -3988,6 +4204,9 @@ export default function BinarySpotPro() {
 
     clearRecoveryTimer();
 
+    clearContractRecoveryRecord();
+
+    syncPersistedRecovery();
     syncLifecycleLabel();
     syncRequestStatus();
     syncRecoveryLabel();
@@ -4272,20 +4491,19 @@ export default function BinarySpotPro() {
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Socket Error Guard Active
+                Refresh Recovery Active
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Critical Errors Stop Trading.
-                Harmless Errors Don&apos;t.
+                Active Demo Contracts Survive a Page Refresh.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                Proposal, BUY and live-contract monitor errors are
-                handled according to their actual ownership and
-                severity. Balance, cleanup, ping and unrelated socket
-                errors are logged without unnecessarily stopping the
-                demo bot.
+                BinarySpot Pro now persists the identity of a known
+                active demo contract in session storage. After an
+                accidental reload, the matching account can restore
+                contract monitoring without automatically restarting
+                the trading bot.
               </p>
             </div>
 
@@ -4316,6 +4534,19 @@ export default function BinarySpotPro() {
                   recoveryStatus.recovering
                     ? 'text-amber-400'
                     : 'text-emerald-400'
+                }
+              />
+
+              <StatBox
+                label="Persisted Recovery"
+                value={
+                  persistedRecoveryLabel
+                }
+                accent={
+                  persistedRecoveryLabel ===
+                  'No persisted contract'
+                    ? 'text-slate-400'
+                    : 'text-cyan-400'
                 }
               />
 
@@ -4370,20 +4601,6 @@ export default function BinarySpotPro() {
                     : 'text-slate-400'
                 }
               />
-
-              <StatBox
-                label="Account Safety"
-                value={
-                  isDemoAccount
-                    ? 'Demo execution'
-                    : 'Real BUY blocked'
-                }
-                accent={
-                  isDemoAccount
-                    ? 'text-cyan-400'
-                    : 'text-rose-400'
-                }
-              />
             </div>
           </div>
         )}
@@ -4397,8 +4614,9 @@ export default function BinarySpotPro() {
                 </h2>
 
                 <p className="mt-1 text-xs text-slate-400">
-                  Demo automation with classified socket errors,
-                  capped contract recovery and request protection.
+                  Demo automation with persistent known-contract
+                  recovery, classified socket errors and capped retry
+                  protection.
                 </p>
               </div>
 
@@ -4887,6 +5105,14 @@ export default function BinarySpotPro() {
                   />
 
                   <StatusCard
+                    label="Persisted Recovery"
+                    value={
+                      persistedRecoveryLabel
+                    }
+                    accent="text-cyan-400"
+                  />
+
+                  <StatusCard
                     label="Socket Error Guard"
                     value={
                       socketErrorLabel
@@ -4913,14 +5139,6 @@ export default function BinarySpotPro() {
                       recoveryBackoffUi.label
                     }
                     accent="text-emerald-400"
-                  />
-
-                  <StatusCard
-                    label="Trade Lifecycle"
-                    value={
-                      lifecycleLabel
-                    }
-                    accent="text-amber-400"
                   />
                 </div>
 
