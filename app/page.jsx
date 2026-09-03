@@ -89,7 +89,6 @@ import {
   getNextRecoveryDelay,
   recordRecoveryFailure,
   resetRecoveryBackoff,
-  allowManualRecoveryRetry,
   getRecoveryBackoffStatus,
 } from '../lib/recoveryBackoff';
 
@@ -140,6 +139,15 @@ import {
   canRestoreStoredPendingBuy,
   getStoredPendingBuyStatus,
 } from '../lib/pendingBuyRecoveryStorage';
+
+import {
+  saveSessionState,
+  loadSessionState,
+  clearSessionState,
+  canRestoreSessionState,
+  buildRestoredSessionState,
+  getSessionStateStatus,
+} from '../lib/sessionStateStorage';
 
 const CLIENT_ID =
   '34hh45FQkPfMgbgj20uoR';
@@ -412,6 +420,16 @@ export default function BinarySpotPro() {
   ] = useState(false);
 
   const [
+    storedSessionLabel,
+    setStoredSessionLabel,
+  ] = useState('No stored session');
+
+  const [
+    sessionPersistenceReady,
+    setSessionPersistenceReady,
+  ] = useState(false);
+
+  const [
     recoveryBackoffUi,
     setRecoveryBackoffUi,
   ] = useState(
@@ -673,6 +691,32 @@ export default function BinarySpotPro() {
     []
   );
 
+  const syncStoredSession =
+    useCallback(() => {
+      const stored =
+        loadSessionState();
+
+      if (
+        !stored.found ||
+        !stored.valid ||
+        !stored.state
+      ) {
+        setStoredSessionLabel(
+          'No stored session'
+        );
+        return;
+      }
+
+      const status =
+        getSessionStateStatus(
+          stored.state
+        );
+
+      setStoredSessionLabel(
+        status.label
+      );
+    }, []);
+
   const clearManualProposal =
     useCallback(() => {
       proposalFreshnessRef.current =
@@ -834,6 +878,114 @@ export default function BinarySpotPro() {
         `Generation ${status.generation} — Clear`
       );
     }, []);
+
+  useEffect(() => {
+    if (
+      !sessionPersistenceReady ||
+      !accountId ||
+      accountType !== 'demo'
+    ) {
+      return;
+    }
+
+    const result =
+      saveSessionState({
+        accountId,
+        accountType,
+        currency,
+
+        symbol,
+        strategy,
+        predictionDigit,
+
+        baseStake:
+          Number(baseStake) || 1,
+
+        currentStake:
+          Number(currentStake) || 1,
+
+        martingale:
+          Number(martingale) || 2,
+
+        takeProfit:
+          Number(takeProfit) || 0,
+
+        stopLoss:
+          Number(stopLoss) || 0,
+
+        maxConsecutiveLosses:
+          Number(
+            maxConsecutiveLosses
+          ) || 1,
+
+        maxStake:
+          Number(maxStake) || 1,
+
+        maxTrades:
+          Number(maxTrades) || 1,
+
+        cooldownSeconds:
+          Number(cooldownSeconds) || 0,
+
+        minimumConfidence:
+          Number(
+            minimumConfidence
+          ) || 0,
+
+        duration:
+          Number(duration) || 1,
+
+        totalProfit,
+        tradeCount,
+        winCount,
+        lossCount,
+        drawCount,
+        consecutiveLosses,
+
+        tradeHistory,
+
+        botWasRunning:
+          isAutoBotRunning,
+      });
+
+    if (result.saved) {
+      const status =
+        getSessionStateStatus(
+          result.state
+        );
+
+      setStoredSessionLabel(
+        status.label
+      );
+    }
+  }, [
+    sessionPersistenceReady,
+    accountId,
+    accountType,
+    currency,
+    symbol,
+    strategy,
+    predictionDigit,
+    baseStake,
+    currentStake,
+    martingale,
+    takeProfit,
+    stopLoss,
+    maxConsecutiveLosses,
+    maxStake,
+    maxTrades,
+    cooldownSeconds,
+    minimumConfidence,
+    duration,
+    totalProfit,
+    tradeCount,
+    winCount,
+    lossCount,
+    drawCount,
+    consecutiveLosses,
+    tradeHistory,
+    isAutoBotRunning,
+  ]);
 
   const clearRecoveryTimer =
     useCallback(() => {
@@ -3687,6 +3839,10 @@ export default function BinarySpotPro() {
         requestedAccountId = ''
       ) => {
         try {
+          setSessionPersistenceReady(
+            false
+          );
+
           setIsLoading(true);
           setAuthError('');
 
@@ -3747,6 +3903,10 @@ export default function BinarySpotPro() {
           const nextAccountType =
             data.account.type || '';
 
+          const nextCurrency =
+            data.account.currency ||
+            'USD';
+
           setAccountId(nextAccountId);
           accountIdRef.current =
             nextAccountId;
@@ -3768,18 +3928,21 @@ export default function BinarySpotPro() {
           );
 
           setCurrency(
-            data.account.currency ||
-              'USD'
+            nextCurrency
           );
 
           currencyRef.current =
-            data.account.currency ||
-            'USD';
+            nextCurrency;
 
           autoBotRunningRef.current =
             false;
 
           setIsAutoBotRunning(false);
+
+          emergencyStoppedRef.current =
+            false;
+
+          setEmergencyStopped(false);
 
           proposalPendingRef.current =
             false;
@@ -3834,6 +3997,233 @@ export default function BinarySpotPro() {
           setContractStatus(
             'No active contract'
           );
+
+          setAutoBotStatus(
+            'Standby'
+          );
+
+          const storedSession =
+            loadSessionState();
+
+          if (
+            storedSession.found &&
+            !storedSession.valid
+          ) {
+            clearSessionState();
+
+            setStoredSessionLabel(
+              'No stored session'
+            );
+          }
+
+          if (
+            storedSession.found &&
+            storedSession.valid &&
+            storedSession.state
+          ) {
+            const restorePermission =
+              canRestoreSessionState(
+                storedSession.state,
+                {
+                  accountId:
+                    nextAccountId,
+                  accountType:
+                    nextAccountType,
+                }
+              );
+
+            if (
+              restorePermission.allowed
+            ) {
+              const restored =
+                buildRestoredSessionState(
+                  restorePermission.state
+                );
+
+              if (
+                restored.valid &&
+                restored.state
+              ) {
+                const state =
+                  restored.state;
+
+                setSymbol(
+                  state.symbol
+                );
+
+                symbolRef.current =
+                  state.symbol;
+
+                setStrategy(
+                  state.strategy
+                );
+
+                strategyRef.current =
+                  state.strategy;
+
+                setPredictionDigit(
+                  state.predictionDigit
+                );
+
+                predictionDigitRef.current =
+                  state.predictionDigit;
+
+                setBaseStake(
+                  String(
+                    state.baseStake
+                  )
+                );
+
+                baseStakeRef.current =
+                  state.baseStake;
+
+                setCurrentStake(
+                  Number(
+                    state.currentStake
+                  ).toFixed(2)
+                );
+
+                currentStakeRef.current =
+                  state.currentStake;
+
+                setMartingale(
+                  String(
+                    state.martingale
+                  )
+                );
+
+                martingaleRef.current =
+                  state.martingale;
+
+                setTakeProfit(
+                  String(
+                    state.takeProfit
+                  )
+                );
+
+                takeProfitRef.current =
+                  state.takeProfit;
+
+                setStopLoss(
+                  String(
+                    state.stopLoss
+                  )
+                );
+
+                stopLossRef.current =
+                  state.stopLoss;
+
+                setMaxConsecutiveLosses(
+                  String(
+                    state.maxConsecutiveLosses
+                  )
+                );
+
+                maxLossesRef.current =
+                  state.maxConsecutiveLosses;
+
+                setMaxStake(
+                  String(
+                    state.maxStake
+                  )
+                );
+
+                maxStakeRef.current =
+                  state.maxStake;
+
+                setMaxTrades(
+                  String(
+                    state.maxTrades
+                  )
+                );
+
+                maxTradesRef.current =
+                  state.maxTrades;
+
+                setCooldownSeconds(
+                  String(
+                    state.cooldownSeconds
+                  )
+                );
+
+                cooldownSecondsRef.current =
+                  state.cooldownSeconds;
+
+                setMinimumConfidence(
+                  String(
+                    state.minimumConfidence
+                  )
+                );
+
+                minimumConfidenceRef.current =
+                  state.minimumConfidence;
+
+                setDuration(
+                  String(
+                    state.duration
+                  )
+                );
+
+                durationRef.current =
+                  state.duration;
+
+                setTotalProfit(
+                  state.totalProfit
+                );
+
+                totalProfitRef.current =
+                  state.totalProfit;
+
+                setTradeCount(
+                  state.tradeCount
+                );
+
+                tradeCountRef.current =
+                  state.tradeCount;
+
+                setWinCount(
+                  state.winCount
+                );
+
+                setLossCount(
+                  state.lossCount
+                );
+
+                setDrawCount(
+                  state.drawCount
+                );
+
+                setConsecutiveLosses(
+                  state.consecutiveLosses
+                );
+
+                consecutiveLossesRef.current =
+                  state.consecutiveLosses;
+
+                setTradeHistory(
+                  state.tradeHistory
+                );
+
+                setAutoBotStatus(
+                  'Standby — Session Restored'
+                );
+
+                const sessionStatus =
+                  getSessionStateStatus(
+                    state
+                  );
+
+                setStoredSessionLabel(
+                  sessionStatus.label
+                );
+
+                addBotLog(
+                  'Stored demo session restored. Automated trading was not resumed.',
+                  'system'
+                );
+              }
+            }
+          }
 
           let restoredPending = false;
 
@@ -4034,9 +4424,14 @@ export default function BinarySpotPro() {
           syncRecoveryBackoff();
           syncRecoveryLabel();
           syncPersistedRecovery();
+          syncStoredSession();
 
           setSocketErrorLabel(
             'No socket errors'
+          );
+
+          setSessionPersistenceReady(
+            true
           );
 
           if (data.wsUrl) {
@@ -4068,6 +4463,7 @@ export default function BinarySpotPro() {
         syncRecoveryLabel,
         syncRequestStatus,
         syncStoredPendingBuy,
+        syncStoredSession,
       ]
     );
 
@@ -4104,6 +4500,7 @@ export default function BinarySpotPro() {
     syncStoredPendingBuy();
     syncPendingBuyRecovery();
     syncPendingBuyReconciliation();
+    syncStoredSession();
 
     loadDerivSession();
 
@@ -4119,6 +4516,7 @@ export default function BinarySpotPro() {
     syncPendingBuyRecovery,
     syncPersistedRecovery,
     syncStoredPendingBuy,
+    syncStoredSession,
   ]);
 
   const switchAccount =
@@ -4164,6 +4562,10 @@ export default function BinarySpotPro() {
       );
 
       clearManualProposal();
+
+      setSessionPersistenceReady(
+        false
+      );
 
       await loadDerivSession(
         newAccountId
@@ -5086,6 +5488,11 @@ export default function BinarySpotPro() {
 
     clearContractRecoveryRecord();
     clearStoredPendingBuy();
+    clearSessionState();
+
+    setStoredSessionLabel(
+      'No stored session'
+    );
 
     syncPersistedRecovery();
     syncLifecycleLabel();
@@ -5403,6 +5810,14 @@ export default function BinarySpotPro() {
                 label="Session"
                 value={
                   sessionStatus.label
+                }
+                accent="text-cyan-400"
+              />
+
+              <StatBox
+                label="Stored Session"
+                value={
+                  storedSessionLabel
                 }
                 accent="text-cyan-400"
               />
