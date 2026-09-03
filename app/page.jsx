@@ -107,6 +107,16 @@ import {
   getStoredRecoveryStatus,
 } from '../lib/contractRecoveryStorage';
 
+import {
+  createPendingBuyRecovery,
+  registerPendingBuy,
+  markPendingBuyAmbiguous,
+  resolvePendingBuyWithContract,
+  clearPendingBuyRecovery,
+  getPendingBuyRecoveryStatus,
+  canOpenAfterPendingBuy,
+} from '../lib/pendingBuyRecovery';
+
 const CLIENT_ID =
   '34hh45FQkPfMgbgj20uoR';
 
@@ -349,6 +359,13 @@ export default function BinarySpotPro() {
   ] = useState('No persisted contract');
 
   const [
+    pendingBuyLabel,
+    setPendingBuyLabel,
+  ] = useState(
+    'No pending BUY ambiguity'
+  );
+
+  const [
     recoveryBackoffUi,
     setRecoveryBackoffUi,
   ] = useState(
@@ -391,6 +408,10 @@ export default function BinarySpotPro() {
 
   const recoveryBackoffRef = useRef(
     createRecoveryBackoff()
+  );
+
+  const pendingBuyRecoveryRef = useRef(
+    createPendingBuyRecovery()
   );
 
   const recoveryTimerRef = useRef(null);
@@ -445,6 +466,7 @@ export default function BinarySpotPro() {
   const maxLossesRef = useRef(3);
   const maxStakeRef = useRef(10);
   const maxTradesRef = useRef(10);
+
   const cooldownSecondsRef =
     useRef(2);
 
@@ -627,6 +649,16 @@ export default function BinarySpotPro() {
       );
     }, []);
 
+  const syncPendingBuyRecovery =
+    useCallback(() => {
+      const status =
+        getPendingBuyRecoveryStatus(
+          pendingBuyRecoveryRef.current
+        );
+
+      setPendingBuyLabel(status.label);
+    }, []);
+
   const syncPersistedRecovery =
     useCallback(() => {
       const stored =
@@ -696,8 +728,7 @@ export default function BinarySpotPro() {
           recoveryTimerRef.current
         );
 
-        recoveryTimerRef.current =
-          null;
+        recoveryTimerRef.current = null;
       }
     }, []);
 
@@ -871,7 +902,7 @@ export default function BinarySpotPro() {
 
         addBotLog(
           status.buyPending
-            ? `Auto bot stopped: ${reason}. In-flight BUY will still be accounted for.`
+            ? `Auto bot stopped: ${reason}. In-flight BUY remains unresolved until its outcome is known.`
             : `Auto bot stopped: ${reason}`,
           'system'
         );
@@ -881,13 +912,11 @@ export default function BinarySpotPro() {
 
   const emergencyStop =
     useCallback(() => {
-      emergencyStoppedRef.current =
-        true;
+      emergencyStoppedRef.current = true;
 
       setEmergencyStopped(true);
 
-      autoBotRunningRef.current =
-        false;
+      autoBotRunningRef.current = false;
 
       setIsAutoBotRunning(false);
 
@@ -922,11 +951,13 @@ export default function BinarySpotPro() {
       addBotLog(
         contractOpenRef.current ||
           status.buyPending
-          ? 'EMERGENCY STOP: New entries blocked. Any already-purchased or in-flight contract will still be accounted for.'
+          ? 'EMERGENCY STOP: New entries blocked. Any active or uncertain BUY will still be accounted for.'
           : 'EMERGENCY STOP: New entries blocked.',
         'error'
       );
-    }, [addBotLog, syncRequestStatus]);
+    },
+    [addBotLog, syncRequestStatus]
+  );
 
   const clearEmergencyStop = () => {
     const requestStatus =
@@ -934,12 +965,18 @@ export default function BinarySpotPro() {
         requestGuardRef.current
       );
 
+    const pendingPermission =
+      canOpenAfterPendingBuy(
+        pendingBuyRecoveryRef.current
+      );
+
     if (
       contractOpenRef.current ||
-      requestStatus.buyPending
+      requestStatus.buyPending ||
+      !pendingPermission.allowed
     ) {
       setBuyError(
-        'Wait for the active or in-flight contract purchase to finish first.'
+        'Wait until the active or uncertain BUY state is resolved first.'
       );
       return;
     }
@@ -966,8 +1003,7 @@ export default function BinarySpotPro() {
           tradingPingRef.current
         );
 
-        tradingPingRef.current =
-          null;
+        tradingPingRef.current = null;
       }
 
       if (tradingWsRef.current) {
@@ -987,13 +1023,14 @@ export default function BinarySpotPro() {
       contractSubscriptionRef.current =
         null;
 
-      proposalPendingRef.current =
-        false;
-
+      proposalPendingRef.current = false;
       buyPendingRef.current = false;
 
       requestGuardRef.current =
         resetRequestGuard();
+
+      pendingBuyRecoveryRef.current =
+        clearPendingBuyRecovery();
 
       setProposalLoading(false);
       setBuyLoading(false);
@@ -1002,8 +1039,15 @@ export default function BinarySpotPro() {
         'Socket closed — requests reset'
       );
 
+      syncPendingBuyRecovery();
+
       setIsTradingConnected(false);
-    }, [clearRecoveryTimer]);
+    },
+    [
+      clearRecoveryTimer,
+      syncPendingBuyRecovery,
+    ]
+  );
 
   const buildProposalPayload =
     useCallback(
@@ -1131,6 +1175,18 @@ export default function BinarySpotPro() {
   const requestAutoProposal =
     useCallback(
       (entrySignal) => {
+        const pendingPermission =
+          canOpenAfterPendingBuy(
+            pendingBuyRecoveryRef.current
+          );
+
+        if (!pendingPermission.allowed) {
+          stopAutoBot(
+            pendingPermission.reason
+          );
+          return;
+        }
+
         const permission =
           canOpenNewContract({
             botRunning:
@@ -1308,6 +1364,18 @@ export default function BinarySpotPro() {
         if (
           !autoBotRunningRef.current
         ) {
+          return;
+        }
+
+        const pendingPermission =
+          canOpenAfterPendingBuy(
+            pendingBuyRecoveryRef.current
+          );
+
+        if (!pendingPermission.allowed) {
+          stopAutoBot(
+            pendingPermission.reason
+          );
           return;
         }
 
@@ -1598,13 +1666,6 @@ export default function BinarySpotPro() {
               2
             )
           );
-
-          addBotLog(
-            `Next stake ${stakeResult.stake.toFixed(
-              2
-            )}`,
-            'system'
-          );
         }
 
         const postSettlement =
@@ -1624,11 +1685,6 @@ export default function BinarySpotPro() {
         ) {
           setAutoBotStatus(
             postSettlement.reason
-          );
-
-          addBotLog(
-            `Trade recorded. ${postSettlement.reason}`,
-            'system'
           );
 
           return;
@@ -1680,8 +1736,7 @@ export default function BinarySpotPro() {
             tradingPingRef.current
           );
 
-          tradingPingRef.current =
-            null;
+          tradingPingRef.current = null;
         }
 
         if (tradingWsRef.current) {
@@ -1848,13 +1903,8 @@ export default function BinarySpotPro() {
                   proposalPendingRef.current =
                     false;
 
-                  setProposalLoading(
-                    false
-                  );
-
-                  setProposalError(
-                    message
-                  );
+                  setProposalLoading(false);
+                  setProposalError(message);
 
                   if (
                     !isAutoOwner(
@@ -1868,7 +1918,12 @@ export default function BinarySpotPro() {
                 }
               }
 
-              if (data.echo_req?.buy) {
+              if (
+                Object.prototype.hasOwnProperty.call(
+                  data.echo_req || {},
+                  'buy'
+                )
+              ) {
                 const resolved =
                   resolveBuyRequest(
                     requestGuardRef.current,
@@ -1893,6 +1948,10 @@ export default function BinarySpotPro() {
                   setBuyLoading(false);
                   setBuyError(message);
 
+                  pendingBuyRecoveryRef.current =
+                    clearPendingBuyRecovery();
+
+                  syncPendingBuyRecovery();
                   syncRequestStatus();
                 }
               }
@@ -1975,11 +2034,6 @@ export default function BinarySpotPro() {
                   'RECOVERY REQUIRED'
                 );
 
-                addBotLog(
-                  'Active contract remains tracked. A fresh recovery session has been queued.',
-                  'system'
-                );
-
                 queueContractRecovery();
 
                 return;
@@ -1992,7 +2046,6 @@ export default function BinarySpotPro() {
                 autoBotRunningRef.current
               ) {
                 stopAutoBot(message);
-                return;
               }
 
               return;
@@ -2011,9 +2064,7 @@ export default function BinarySpotPro() {
                 data.balance.currency ||
                 'USD';
 
-              setCurrency(
-                nextCurrency
-              );
+              setCurrency(nextCurrency);
 
               currencyRef.current =
                 nextCurrency;
@@ -2033,16 +2084,6 @@ export default function BinarySpotPro() {
               if (
                 !resolved.match.matched
               ) {
-                addBotLog(
-                  `Ignored stale proposal response${
-                    resolved.match.reqId !==
-                    null
-                      ? ` #${resolved.match.reqId}`
-                      : ''
-                  }.`,
-                  'system'
-                );
-
                 return;
               }
 
@@ -2065,11 +2106,6 @@ export default function BinarySpotPro() {
                   emergencyStoppedRef.current ||
                   !autoBotRunningRef.current
                 ) {
-                  addBotLog(
-                    'Auto proposal returned after bot stop. Purchase cancelled.',
-                    'system'
-                  );
-
                   lifecycleRef.current =
                     createTradeLifecycle();
 
@@ -2091,6 +2127,20 @@ export default function BinarySpotPro() {
                   contractOpenRef.current ||
                   buyPendingRef.current
                 ) {
+                  return;
+                }
+
+                const pendingPermission =
+                  canOpenAfterPendingBuy(
+                    pendingBuyRecoveryRef.current
+                  );
+
+                if (
+                  !pendingPermission.allowed
+                ) {
+                  stopAutoBot(
+                    pendingPermission.reason
+                  );
                   return;
                 }
 
@@ -2136,10 +2186,46 @@ export default function BinarySpotPro() {
                   return;
                 }
 
+                const pendingRegistration =
+                  registerPendingBuy(
+                    pendingBuyRecoveryRef.current,
+                    {
+                      reqId: buyReqId,
+                      proposalId:
+                        data.proposal.id,
+                      accountId:
+                        accountIdRef.current,
+                      accountType:
+                        accountTypeRef.current,
+                      owner: 'auto',
+                      symbol:
+                        symbolRef.current,
+                      strategy:
+                        strategyRef.current,
+                      expectedStake:
+                        askPrice,
+                      startedAt:
+                        Date.now(),
+                    }
+                  );
+
+                if (
+                  !pendingRegistration.valid
+                ) {
+                  stopAutoBot(
+                    pendingRegistration.reason
+                  );
+                  return;
+                }
+
                 requestGuardRef.current =
                   registration.guard;
 
+                pendingBuyRecoveryRef.current =
+                  pendingRegistration.recovery;
+
                 syncRequestStatus();
+                syncPendingBuyRecovery();
 
                 buyPendingRef.current =
                   true;
@@ -2201,11 +2287,6 @@ export default function BinarySpotPro() {
               setProposalClock(
                 Date.now()
               );
-
-              addBotLog(
-                `Manual proposal ready: ${data.proposal.id}. Freshness timer started.`,
-                'success'
-              );
             }
 
             if (
@@ -2223,12 +2304,7 @@ export default function BinarySpotPro() {
                 !resolved.match.matched
               ) {
                 addBotLog(
-                  `Ignored unmatched BUY response${
-                    resolved.match.reqId !==
-                    null
-                      ? ` #${resolved.match.reqId}`
-                      : ''
-                  }.`,
+                  'Ignored unmatched BUY response.',
                   'error'
                 );
 
@@ -2249,23 +2325,45 @@ export default function BinarySpotPro() {
               setBuyLoading(false);
               setBuyError('');
 
-              if (!isAutoOwner(owner)) {
-                clearManualProposal();
-              }
-
               const contractId =
                 data.buy.contract_id;
 
               if (!contractId) {
+                pendingBuyRecoveryRef.current =
+                  markPendingBuyAmbiguous(
+                    pendingBuyRecoveryRef.current
+                  );
+
+                syncPendingBuyRecovery();
+
                 if (
                   isAutoOwner(owner)
                 ) {
                   stopAutoBot(
-                    'No contract ID returned.'
+                    'BUY returned without a contract ID. Purchase state is ambiguous.'
                   );
                 }
 
                 return;
+              }
+
+              const pendingResolution =
+                resolvePendingBuyWithContract(
+                  pendingBuyRecoveryRef.current,
+                  contractId
+                );
+
+              if (
+                pendingResolution.valid
+              ) {
+                pendingBuyRecoveryRef.current =
+                  pendingResolution.recovery;
+
+                syncPendingBuyRecovery();
+              }
+
+              if (!isAutoOwner(owner)) {
+                clearManualProposal();
               }
 
               if (
@@ -2351,24 +2449,14 @@ export default function BinarySpotPro() {
 
                   if (persisted.saved) {
                     syncPersistedRecovery();
-
-                    addBotLog(
-                      `Contract #${contractId} recovery identity persisted for refresh protection.`,
-                      'system'
-                    );
-                  } else {
-                    addBotLog(
-                      `Persistence warning: ${persisted.reason}`,
-                      'error'
-                    );
                   }
                 }
-              } else {
-                addBotLog(
-                  `Recovery registration warning: ${recoveryRegistration.reason}`,
-                  'error'
-                );
               }
+
+              pendingBuyRecoveryRef.current =
+                clearPendingBuyRecovery();
+
+              syncPendingBuyRecovery();
 
               contractOpenRef.current =
                 true;
@@ -2398,7 +2486,7 @@ export default function BinarySpotPro() {
                   isAutoOwner(owner)
                     ? 'AUTO'
                     : 'MANUAL'
-                } demo contract purchased #${contractId} | Req #${resolved.match.reqId}`,
+                } demo contract purchased #${contractId}`,
                 'success'
               );
 
@@ -2459,13 +2547,6 @@ export default function BinarySpotPro() {
 
                 syncRecoveryLabel();
                 syncRecoveryBackoff();
-
-                addBotLog(
-                  `Contract #${contract.contract_id} monitor recovered successfully.`,
-                  'success'
-                );
-              } else {
-                syncRecoveryLabel();
               }
 
               const profit =
@@ -2535,8 +2616,8 @@ export default function BinarySpotPro() {
                 );
 
               clearContractRecoveryRecord();
-              syncPersistedRecovery();
 
+              syncPersistedRecovery();
               syncRecoveryLabel();
               syncRecoveryBackoff();
 
@@ -2552,11 +2633,6 @@ export default function BinarySpotPro() {
                 String(
                   finalStatus
                 ).toUpperCase()
-              );
-
-              addBotLog(
-                `Contract #${contract.contract_id} settlement confirmed. Persisted recovery record cleared.`,
-                'system'
               );
 
               if (
@@ -2653,11 +2729,49 @@ export default function BinarySpotPro() {
               tradingPingRef.current
             );
 
-            tradingPingRef.current =
-              null;
+            tradingPingRef.current = null;
           }
 
           setIsTradingConnected(false);
+
+          const requestStatus =
+            getRequestGuardStatus(
+              requestGuardRef.current
+            );
+
+          if (requestStatus.buyPending) {
+            pendingBuyRecoveryRef.current =
+              markPendingBuyAmbiguous(
+                pendingBuyRecoveryRef.current
+              );
+
+            syncPendingBuyRecovery();
+
+            setBuyLoading(false);
+
+            setAutoBotStatus(
+              'BUY STATE AMBIGUOUS'
+            );
+
+            setBuyError(
+              'Connection was lost after a BUY was sent. BinarySpot will not open another contract until this purchase is reconciled.'
+            );
+
+            addBotLog(
+              `BUY #${requestStatus.buyReqId} became ambiguous after WebSocket disconnect. New trading is frozen.`,
+              'error'
+            );
+
+            if (
+              autoBotRunningRef.current
+            ) {
+              stopAutoBot(
+                'BUY outcome unknown after socket disconnect.'
+              );
+            }
+
+            return;
+          }
 
           const recoveryStatus =
             getContractRecoveryStatus(
@@ -2731,6 +2845,7 @@ export default function BinarySpotPro() {
         registerRecoveryFailure,
         stopAutoBot,
         syncLifecycleLabel,
+        syncPendingBuyRecovery,
         syncPersistedRecovery,
         syncRecoveryBackoff,
         syncRecoveryLabel,
@@ -2784,11 +2899,6 @@ export default function BinarySpotPro() {
           'RECONNECTING'
         );
 
-        addBotLog(
-          `Recovery attempt ${permission.attempts + 1}/${permission.maxAttempts} for contract #${status.contractId}.`,
-          'system'
-        );
-
         const response = await fetch(
           `/api/auth/deriv/session?account_id=${encodeURIComponent(
             status.accountId
@@ -2838,20 +2948,7 @@ export default function BinarySpotPro() {
           );
         }
 
-        if (
-          !connectTradingSocketRef.current
-        ) {
-          throw new Error(
-            'Trading socket recovery handler is unavailable.'
-          );
-        }
-
-        addBotLog(
-          `Fresh recovery session received for ${status.accountId}.`,
-          'system'
-        );
-
-        connectTradingSocketRef.current(
+        connectTradingSocketRef.current?.(
           data.wsUrl
         );
       } catch (error) {
@@ -2903,11 +3000,6 @@ export default function BinarySpotPro() {
 
     setContractStatus(
       'MANUAL RECOVERY'
-    );
-
-    addBotLog(
-      `Manual recovery retry started for contract #${recoveryStatus.contractId}.`,
-      'system'
     );
 
     queueContractRecovery(0);
@@ -2962,9 +3054,7 @@ export default function BinarySpotPro() {
           setIsAuthorized(true);
 
           setAccounts(
-            Array.isArray(
-              data.accounts
-            )
+            Array.isArray(data.accounts)
               ? data.accounts
               : []
           );
@@ -2982,9 +3072,7 @@ export default function BinarySpotPro() {
           const nextAccountType =
             data.account.type || '';
 
-          setAccountId(
-            nextAccountId
-          );
+          setAccountId(nextAccountId);
 
           accountIdRef.current =
             nextAccountId;
@@ -3035,6 +3123,9 @@ export default function BinarySpotPro() {
           requestGuardRef.current =
             resetRequestGuard();
 
+          pendingBuyRecoveryRef.current =
+            clearPendingBuyRecovery();
+
           recoveryRef.current =
             clearContractRecovery();
 
@@ -3053,6 +3144,7 @@ export default function BinarySpotPro() {
 
           syncLifecycleLabel();
           syncRequestStatus();
+          syncPendingBuyRecovery();
           syncRecoveryBackoff();
 
           setSocketErrorLabel(
@@ -3069,10 +3161,6 @@ export default function BinarySpotPro() {
           setContractStatus(
             'No active contract'
           );
-
-          // ================================================
-          // RESTORE PERSISTED DEMO CONTRACT
-          // ================================================
 
           const stored =
             loadContractRecoveryRecord();
@@ -3129,8 +3217,6 @@ export default function BinarySpotPro() {
                   isSold: false,
                 });
 
-                setContractProfit(null);
-
                 setContractStatus(
                   'RECOVERY REQUIRED'
                 );
@@ -3144,20 +3230,14 @@ export default function BinarySpotPro() {
                   );
                 }
 
-                if (
-                  record.owner ===
-                  'auto'
-                ) {
-                  lifecycleRef.current =
-                    beginTradeLifecycle({
-                      mode: 'auto',
-                    });
-                } else {
-                  lifecycleRef.current =
-                    beginTradeLifecycle({
-                      mode: 'manual',
-                    });
-                }
+                lifecycleRef.current =
+                  beginTradeLifecycle({
+                    mode:
+                      record.owner ===
+                      'auto'
+                        ? 'auto'
+                        : 'manual',
+                  });
 
                 lifecycleRef.current =
                   attachContractToLifecycle(
@@ -3169,37 +3249,16 @@ export default function BinarySpotPro() {
                 syncRecoveryLabel();
 
                 addBotLog(
-                  `Refresh recovery restored contract #${record.contractId}. Automated trading remains stopped until settlement.`,
+                  `Refresh recovery restored contract #${record.contractId}. Automated trading remains stopped.`,
                   'system'
                 );
 
                 setAutoBotStatus(
                   'Persisted contract recovery'
                 );
-              } else {
-                addBotLog(
-                  `Stored contract could not be registered: ${registration.reason}`,
-                  'error'
-                );
               }
             } else {
-              recoveryRef.current =
-                clearContractRecovery();
-
-              contractOpenRef.current =
-                false;
-
               syncRecoveryLabel();
-
-              if (
-                stored.record.accountId ===
-                nextAccountId
-              ) {
-                addBotLog(
-                  `Stored recovery was not restored: ${restorePermission.reason}`,
-                  'error'
-                );
-              }
             }
           } else {
             syncRecoveryLabel();
@@ -3213,10 +3272,6 @@ export default function BinarySpotPro() {
             );
           } else {
             closeTradingSocket();
-
-            if (data.error) {
-              setAuthError(data.error);
-            }
           }
         } catch (error) {
           console.error(error);
@@ -3236,6 +3291,7 @@ export default function BinarySpotPro() {
         closeTradingSocket,
         connectTradingSocket,
         syncLifecycleLabel,
+        syncPendingBuyRecovery,
         syncPersistedRecovery,
         syncRecoveryBackoff,
         syncRecoveryLabel,
@@ -3273,6 +3329,8 @@ export default function BinarySpotPro() {
     }
 
     syncPersistedRecovery();
+    syncPendingBuyRecovery();
+
     loadDerivSession();
 
     return () => {
@@ -3283,6 +3341,7 @@ export default function BinarySpotPro() {
     clearRecoveryTimer,
     closeTradingSocket,
     loadDerivSession,
+    syncPendingBuyRecovery,
     syncPersistedRecovery,
   ]);
 
@@ -3306,14 +3365,20 @@ export default function BinarySpotPro() {
           recoveryRef.current
         );
 
+      const pendingPermission =
+        canOpenAfterPendingBuy(
+          pendingBuyRecoveryRef.current
+        );
+
       if (
         contractOpenRef.current ||
         requestStatus.buyPending ||
+        !pendingPermission.allowed ||
         (recoveryStatus.hasContract &&
           !recoveryStatus.settled)
       ) {
         setAuthError(
-          'Wait for the active or recovering contract to settle before switching accounts.'
+          'Resolve the active, recovering, or uncertain BUY before switching accounts.'
         );
         return;
       }
@@ -3378,13 +3443,6 @@ export default function BinarySpotPro() {
               'tick' &&
             data.tick
           ) {
-            if (
-              data.subscription?.id
-            ) {
-              publicSubscriptionRef.current =
-                data.subscription.id;
-            }
-
             const precisionResult =
               applyCachedPipSize(
                 pipSizeCacheRef.current,
@@ -3455,12 +3513,7 @@ export default function BinarySpotPro() {
               updatedHistory
             );
           }
-        } catch (error) {
-          console.error(
-            'Market message error:',
-            error
-          );
-        }
+        } catch {}
       };
 
       ws.onerror = () => {
@@ -3480,8 +3533,7 @@ export default function BinarySpotPro() {
           publicPingRef.current
         );
 
-        publicPingRef.current =
-          null;
+        publicPingRef.current = null;
       }
 
       if (ws) {
@@ -3497,15 +3549,14 @@ export default function BinarySpotPro() {
   ]);
 
   useEffect(() => {
-    const result =
+    setSignal(
       evaluateEntrySignal({
         strategy,
         digitHistory:
           digitHistoryRef.current,
         predictionDigit,
-      });
-
-    setSignal(result);
+      })
+    );
   }, [
     strategy,
     predictionDigit,
@@ -3535,15 +3586,12 @@ export default function BinarySpotPro() {
           )
           .join('');
 
-      const verifierData =
-        new TextEncoder().encode(
-          verifier
-        );
-
       const digest =
         await crypto.subtle.digest(
           'SHA-256',
-          verifierData
+          new TextEncoder().encode(
+            verifier
+          )
         );
 
       const challenge =
@@ -3636,6 +3684,18 @@ export default function BinarySpotPro() {
   };
 
   const startAutoBot = () => {
+    const pendingPermission =
+      canOpenAfterPendingBuy(
+        pendingBuyRecoveryRef.current
+      );
+
+    if (!pendingPermission.allowed) {
+      setBuyError(
+        pendingPermission.reason
+      );
+      return;
+    }
+
     const recoveryStatus =
       getContractRecoveryStatus(
         recoveryRef.current
@@ -3646,7 +3706,7 @@ export default function BinarySpotPro() {
       !recoveryStatus.settled
     ) {
       setBuyError(
-        'Wait for the active or recovering contract to settle before starting another bot session.'
+        'Wait for the active or recovering contract to settle.'
       );
       return;
     }
@@ -3701,15 +3761,6 @@ export default function BinarySpotPro() {
       return;
     }
 
-    if (
-      contractOpenRef.current
-    ) {
-      setBuyError(
-        'Wait for the active contract to settle.'
-      );
-      return;
-    }
-
     clearManualProposal();
 
     const startingStake =
@@ -3721,8 +3772,7 @@ export default function BinarySpotPro() {
     tradeCountRef.current = 0;
     totalProfitRef.current = 0;
 
-    consecutiveLossesRef.current =
-      0;
+    consecutiveLossesRef.current = 0;
 
     setTradeCount(0);
     setWinCount(0);
@@ -3747,6 +3797,9 @@ export default function BinarySpotPro() {
     recoveryRef.current =
       clearContractRecovery();
 
+    pendingBuyRecoveryRef.current =
+      clearPendingBuyRecovery();
+
     recoveryBackoffRef.current =
       resetRecoveryBackoff(
         recoveryBackoffRef.current
@@ -3754,6 +3807,7 @@ export default function BinarySpotPro() {
 
     syncLifecycleLabel();
     syncRecoveryLabel();
+    syncPendingBuyRecovery();
     syncRecoveryBackoff();
     syncRequestStatus();
 
@@ -3770,7 +3824,7 @@ export default function BinarySpotPro() {
     );
 
     addBotLog(
-      `PERSISTENT RECOVERY ACTIVE — ${strategy}`,
+      `PENDING BUY GUARD ACTIVE — ${strategy}`,
       'system'
     );
 
@@ -3798,6 +3852,18 @@ export default function BinarySpotPro() {
   };
 
   const requestManualProposal = () => {
+    const pendingPermission =
+      canOpenAfterPendingBuy(
+        pendingBuyRecoveryRef.current
+      );
+
+    if (!pendingPermission.allowed) {
+      setProposalError(
+        pendingPermission.reason
+      );
+      return;
+    }
+
     const recoveryStatus =
       getContractRecoveryStatus(
         recoveryRef.current
@@ -3921,6 +3987,18 @@ export default function BinarySpotPro() {
   };
 
   const buyManualDemoProposal = () => {
+    const pendingPermission =
+      canOpenAfterPendingBuy(
+        pendingBuyRecoveryRef.current
+      );
+
+    if (!pendingPermission.allowed) {
+      setBuyError(
+        pendingPermission.reason
+      );
+      return;
+    }
+
     if (
       emergencyStoppedRef.current
     ) {
@@ -3963,8 +4041,6 @@ export default function BinarySpotPro() {
       setBuyError(
         freshnessPermission.reason
       );
-
-      setProposalClock(Date.now());
       return;
     }
 
@@ -3973,33 +4049,6 @@ export default function BinarySpotPro() {
     ) {
       setBuyError(
         'An active contract already exists.'
-      );
-      return;
-    }
-
-    const recoveryStatus =
-      getContractRecoveryStatus(
-        recoveryRef.current
-      );
-
-    if (
-      recoveryStatus.hasContract &&
-      !recoveryStatus.settled
-    ) {
-      setBuyError(
-        'A contract is still active or recovering.'
-      );
-      return;
-    }
-
-    const guardStatus =
-      getRequestGuardStatus(
-        requestGuardRef.current
-      );
-
-    if (guardStatus.buyPending) {
-      setBuyError(
-        'A purchase request is already in flight.'
       );
       return;
     }
@@ -4067,23 +4116,49 @@ export default function BinarySpotPro() {
       return;
     }
 
+    const pendingRegistration =
+      registerPendingBuy(
+        pendingBuyRecoveryRef.current,
+        {
+          reqId: buyReqId,
+          proposalId:
+            proposalData.id,
+          accountId:
+            accountIdRef.current,
+          accountType:
+            accountTypeRef.current,
+          owner: 'manual',
+          symbol:
+            symbolRef.current,
+          strategy:
+            strategyRef.current,
+          expectedStake: price,
+          startedAt: Date.now(),
+        }
+      );
+
+    if (
+      !pendingRegistration.valid
+    ) {
+      setBuyError(
+        pendingRegistration.reason
+      );
+      return;
+    }
+
     requestGuardRef.current =
       registration.guard;
 
+    pendingBuyRecoveryRef.current =
+      pendingRegistration.recovery;
+
     syncRequestStatus();
+    syncPendingBuyRecovery();
 
     buyPendingRef.current = true;
 
     setBuyLoading(true);
     setBuyError('');
-
-    addBotLog(
-      `Manual proposal ${proposalData.id} passed freshness guard. BUY sent with ${Math.ceil(
-        freshnessPermission.remainingMs /
-          1000
-      )}s freshness remaining.`,
-      'trade'
-    );
 
     ws.send(
       JSON.stringify({
@@ -4107,6 +4182,18 @@ export default function BinarySpotPro() {
   };
 
   const changeSymbol = (nextSymbol) => {
+    const pendingPermission =
+      canOpenAfterPendingBuy(
+        pendingBuyRecoveryRef.current
+      );
+
+    if (!pendingPermission.allowed) {
+      setBuyError(
+        pendingPermission.reason
+      );
+      return;
+    }
+
     if (!nextSymbol) {
       return;
     }
@@ -4131,11 +4218,6 @@ export default function BinarySpotPro() {
     setPipSize(null);
     setPipSource('none');
     setUsedPipSize(false);
-
-    addBotLog(
-      `Public market feed switching to ${nextSymbol}. Authenticated trading socket remains unchanged.`,
-      'system'
-    );
   };
 
   const resetSessionStats = () => {
@@ -4149,11 +4231,17 @@ export default function BinarySpotPro() {
         recoveryRef.current
       );
 
+    const pendingStatus =
+      getPendingBuyRecoveryStatus(
+        pendingBuyRecoveryRef.current
+      );
+
     if (
       isAutoBotRunning ||
       contractOpenRef.current ||
       requestStatus.proposalPending ||
       requestStatus.buyPending ||
+      pendingStatus.blocking ||
       (recoveryStatus.hasContract &&
         !recoveryStatus.settled)
     ) {
@@ -4163,8 +4251,7 @@ export default function BinarySpotPro() {
     tradeCountRef.current = 0;
     totalProfitRef.current = 0;
 
-    consecutiveLossesRef.current =
-      0;
+    consecutiveLossesRef.current = 0;
 
     setTradeCount(0);
     setWinCount(0);
@@ -4183,13 +4270,14 @@ export default function BinarySpotPro() {
       base.toFixed(2)
     );
 
-    cooldownUntilRef.current = 0;
-
     lifecycleRef.current =
       createTradeLifecycle();
 
     requestGuardRef.current =
       resetRequestGuard();
+
+    pendingBuyRecoveryRef.current =
+      clearPendingBuyRecovery();
 
     recoveryRef.current =
       clearContractRecovery();
@@ -4202,19 +4290,17 @@ export default function BinarySpotPro() {
     proposalFreshnessRef.current =
       clearProposalFreshness();
 
-    clearRecoveryTimer();
-
     clearContractRecoveryRecord();
 
     syncPersistedRecovery();
     syncLifecycleLabel();
     syncRequestStatus();
+    syncPendingBuyRecovery();
     syncRecoveryLabel();
     syncRecoveryBackoff();
 
     setBotLogs([]);
     setProposalData(null);
-    setProposalClock(Date.now());
     setProposalError('');
     setBuyError('');
     setActiveContract(null);
@@ -4243,6 +4329,11 @@ export default function BinarySpotPro() {
     Boolean(
       activeContract &&
         !activeContract.isSold
+    );
+
+  const pendingBuyStatus =
+    getPendingBuyRecoveryStatus(
+      pendingBuyRecoveryRef.current
     );
 
   const needsPredictionDigit =
@@ -4281,7 +4372,9 @@ export default function BinarySpotPro() {
         isContractOpen,
       proposalPending:
         proposalLoading,
-      buyPending: buyLoading,
+      buyPending:
+        pendingBuyStatus.blocking ||
+        buyLoading,
       cooldownUntil:
         cooldownUntilRef.current,
     });
@@ -4332,8 +4425,8 @@ export default function BinarySpotPro() {
                 }
                 activeLabel="Trading Socket Active"
                 inactiveLabel={
-                  recoveryBackoffUi.exhausted
-                    ? 'Trading Recovery Paused'
+                  pendingBuyStatus.ambiguous
+                    ? 'BUY Reconciliation Required'
                     : recoveryStatus.needsRecovery
                     ? 'Trading Socket Recovering'
                     : 'Trading Socket Offline'
@@ -4348,15 +4441,7 @@ export default function BinarySpotPro() {
               {symbol}
             </span>
 
-            <span
-              className={`font-black ${
-                lastTick !== null &&
-                prevTick !== null &&
-                lastTick >= prevTick
-                  ? 'text-emerald-400'
-                  : 'text-rose-400'
-              }`}
-            >
+            <span className="font-black text-emerald-400">
               {displayQuote}
             </span>
 
@@ -4369,24 +4454,18 @@ export default function BinarySpotPro() {
 
       <header className="border-b border-slate-800 bg-[#0d121c]">
         <div className="max-w-7xl mx-auto px-4 py-4 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-black font-black text-xl">
-              BS
+          <div>
+            <div className="text-lg font-black">
+              BINARY
+              <span className="text-emerald-400">
+                SPOT
+              </span>{' '}
+              PRO
             </div>
 
-            <div>
-              <div className="text-lg font-black">
-                BINARY
-                <span className="text-emerald-400">
-                  SPOT
-                </span>{' '}
-                PRO
-              </div>
-
-              <p className="text-[9px] uppercase tracking-widest font-bold text-emerald-500">
-                Algorithmic Hub
-              </p>
-            </div>
+            <p className="text-[9px] uppercase tracking-widest font-bold text-emerald-500">
+              Algorithmic Hub
+            </p>
           </div>
 
           {!isAuthorized ? (
@@ -4402,52 +4481,12 @@ export default function BinarySpotPro() {
               CONNECT DERIV
             </button>
           ) : (
-            <div className="flex flex-wrap items-center gap-3">
-              {accounts.length > 1 && (
-                <select
-                  value={
-                    selectedAccountId
-                  }
-                  onChange={(event) =>
-                    switchAccount(
-                      event.target.value
-                    )
-                  }
-                  disabled={
-                    isAutoBotRunning ||
-                    isContractOpen ||
-                    buyLoading ||
-                    (recoveryStatus.hasContract &&
-                      !recoveryStatus.settled)
-                  }
-                  className="bg-[#151d2d] border border-slate-700 rounded-xl px-3 py-2 text-xs"
-                >
-                  {accounts.map(
-                    (account) => (
-                      <option
-                        key={account.id}
-                        value={account.id}
-                      >
-                        {account.type ===
-                        'demo'
-                          ? 'Demo'
-                          : 'Real'}{' '}
-                        — {account.id}
-                      </option>
-                    )
-                  )}
-                </select>
-              )}
-
-              <AccountCard
-                accountType={
-                  accountType
-                }
-                accountId={accountId}
-                balance={balance}
-                currency={currency}
-              />
-            </div>
+            <AccountCard
+              accountType={accountType}
+              accountId={accountId}
+              balance={balance}
+              currency={currency}
+            />
           )}
         </div>
       </header>
@@ -4465,7 +4504,6 @@ export default function BinarySpotPro() {
           ].map(([id, label]) => (
             <button
               key={id}
-              type="button"
               onClick={() =>
                 setActiveTab(id)
               }
@@ -4486,34 +4524,72 @@ export default function BinarySpotPro() {
           <Alert>⚠️ {authError}</Alert>
         )}
 
+        {pendingBuyStatus.ambiguous && (
+          <div className="mb-6 border border-rose-700 bg-rose-950/30 rounded-2xl p-5">
+            <p className="font-black text-rose-300">
+              ⚠️ BUY OUTCOME UNKNOWN
+            </p>
+
+            <p className="mt-2 text-sm text-slate-300">
+              BinarySpot sent BUY request #
+              {pendingBuyStatus.reqId}, but
+              the connection disappeared
+              before the contract ID was
+              received.
+            </p>
+
+            <p className="mt-2 text-xs text-slate-400">
+              New contracts are blocked.
+              BinarySpot will not assume
+              that the purchase failed.
+            </p>
+          </div>
+        )}
+
         {activeTab ===
           'overview' && (
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Refresh Recovery Active
+                Pending BUY Guard Active
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Active Demo Contracts Survive a Page Refresh.
+                Unknown Purchase States Can No Longer Trigger Duplicate Entries.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                BinarySpot Pro now persists the identity of a known
-                active demo contract in session storage. After an
-                accidental reload, the matching account can restore
-                contract monitoring without automatically restarting
-                the trading bot.
+                If the authenticated socket
+                disappears after BUY is sent
+                but before Deriv returns the
+                contract ID, BinarySpot
+                freezes new trading instead
+                of assuming the purchase
+                failed.
               </p>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <StatBox
                 label="Session"
                 value={
                   sessionStatus.label
                 }
                 accent="text-cyan-400"
+              />
+
+              <StatBox
+                label="Pending BUY Safety"
+                value={
+                  pendingBuyLabel
+                }
+                accent={
+                  pendingBuyStatus.ambiguous
+                    ? 'text-rose-400'
+                    : pendingBuyStatus.blocking
+                    ? 'text-amber-400'
+                    : 'text-emerald-400'
+                }
               />
 
               <StatBox
@@ -4529,12 +4605,7 @@ export default function BinarySpotPro() {
                 value={
                   recoveryLabel
                 }
-                accent={
-                  recoveryStatus.needsRecovery ||
-                  recoveryStatus.recovering
-                    ? 'text-amber-400'
-                    : 'text-emerald-400'
-                }
+                accent="text-emerald-400"
               />
 
               <StatBox
@@ -4542,27 +4613,7 @@ export default function BinarySpotPro() {
                 value={
                   persistedRecoveryLabel
                 }
-                accent={
-                  persistedRecoveryLabel ===
-                  'No persisted contract'
-                    ? 'text-slate-400'
-                    : 'text-cyan-400'
-                }
-              />
-
-              <StatBox
-                label="Recovery Backoff"
-                value={
-                  recoveryBackoffUi.label
-                }
-                accent={
-                  recoveryBackoffUi.exhausted
-                    ? 'text-rose-400'
-                    : recoveryBackoffUi.attempts >
-                      0
-                    ? 'text-amber-400'
-                    : 'text-emerald-400'
-                }
+                accent="text-cyan-400"
               />
 
               <StatBox
@@ -4570,22 +4621,21 @@ export default function BinarySpotPro() {
                 value={
                   socketErrorLabel
                 }
-                accent={
-                  socketErrorLabel ===
-                  'No socket errors'
-                    ? 'text-emerald-400'
-                    : 'text-amber-400'
+                accent="text-emerald-400"
+              />
+
+              <StatBox
+                label="Recovery Backoff"
+                value={
+                  recoveryBackoffUi.label
                 }
+                accent="text-emerald-400"
               />
 
               <StatBox
                 label="Tick Precision"
                 value={precisionLabel}
-                accent={
-                  usedPipSize
-                    ? 'text-emerald-400'
-                    : 'text-amber-400'
-                }
+                accent="text-emerald-400"
               />
 
               <StatBox
@@ -4593,13 +4643,7 @@ export default function BinarySpotPro() {
                 value={
                   proposalFreshnessStatus.label
                 }
-                accent={
-                  proposalFreshnessStatus.fresh
-                    ? 'text-emerald-400'
-                    : proposalFreshnessStatus.expired
-                    ? 'text-rose-400'
-                    : 'text-slate-400'
-                }
+                accent="text-slate-400"
               />
             </div>
           </div>
@@ -4607,771 +4651,264 @@ export default function BinarySpotPro() {
 
         {activeTab === 'bots' && (
           <div className="space-y-6">
-            <div className="flex flex-wrap justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-black">
-                  Bot Studio
-                </h2>
+            <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-6">
+              <h2 className="text-xl font-black">
+                Bot Studio
+              </h2>
 
-                <p className="mt-1 text-xs text-slate-400">
-                  Demo automation with persistent known-contract
-                  recovery, classified socket errors and capped retry
-                  protection.
-                </p>
+              <p className="mt-2 text-sm text-slate-400">
+                Demo-only execution remains
+                enforced.
+              </p>
+
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
+                <Field label="Synthetic Asset">
+                  <select
+                    value={symbol}
+                    onChange={(event) =>
+                      changeSymbol(
+                        event.target.value
+                      )
+                    }
+                    disabled={
+                      isAutoBotRunning ||
+                      isContractOpen ||
+                      pendingBuyStatus.blocking
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  >
+                    <option value="R_100">
+                      Volatility 100
+                    </option>
+
+                    <option value="R_50">
+                      Volatility 50
+                    </option>
+
+                    <option value="R_25">
+                      Volatility 25
+                    </option>
+
+                    <option value="1HZ100V">
+                      Volatility 100 (1s)
+                    </option>
+                  </select>
+                </Field>
+
+                <Field label="Strategy">
+                  <select
+                    value={strategy}
+                    onChange={(event) =>
+                      setStrategy(
+                        event.target.value
+                      )
+                    }
+                    disabled={
+                      isAutoBotRunning ||
+                      pendingBuyStatus.blocking
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  >
+                    <option value="DIGITDIFF">
+                      Digit Differs
+                    </option>
+
+                    <option value="DIGITMATCH">
+                      Digit Matches
+                    </option>
+
+                    <option value="DIGITEVEN">
+                      Digit Even
+                    </option>
+
+                    <option value="DIGITODD">
+                      Digit Odd
+                    </option>
+
+                    <option value="DIGITOVER">
+                      Digit Over
+                    </option>
+
+                    <option value="DIGITUNDER">
+                      Digit Under
+                    </option>
+                  </select>
+                </Field>
+
+                {needsPredictionDigit && (
+                  <Field label="Prediction / Barrier">
+                    <input
+                      value={
+                        predictionDigit
+                      }
+                      onChange={(event) =>
+                        setPredictionDigit(
+                          event.target.value
+                        )
+                      }
+                      className={
+                        INPUT_CLASS
+                      }
+                    />
+                  </Field>
+                )}
+
+                <Field label="Base Stake">
+                  <input
+                    value={baseStake}
+                    onChange={(event) =>
+                      setBaseStake(
+                        event.target.value
+                      )
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  />
+                </Field>
+
+                <Field label="Maximum Stake">
+                  <input
+                    value={maxStake}
+                    onChange={(event) =>
+                      setMaxStake(
+                        event.target.value
+                      )
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  />
+                </Field>
+
+                <Field label="Minimum Confidence">
+                  <input
+                    value={
+                      minimumConfidence
+                    }
+                    onChange={(event) =>
+                      setMinimumConfidence(
+                        event.target.value
+                      )
+                    }
+                    className={
+                      INPUT_CLASS
+                    }
+                  />
+                </Field>
               </div>
 
-              <span
-                className={`px-3 py-1.5 rounded-full text-xs font-black ${
-                  emergencyStopped
-                    ? 'bg-rose-500/20 text-rose-400'
-                    : recoveryBackoffUi.exhausted
-                    ? 'bg-rose-500/20 text-rose-400'
-                    : recoveryStatus.needsRecovery ||
-                      recoveryStatus.recovering
-                    ? 'bg-amber-500/15 text-amber-400'
-                    : isAutoBotRunning
-                    ? 'bg-emerald-500/15 text-emerald-400'
-                    : 'bg-slate-800 text-slate-400'
-                }`}
-              >
-                {recoveryBackoffUi.exhausted
-                  ? 'RECOVERY PAUSED'
-                  : recoveryStatus.needsRecovery
-                  ? 'RECOVERY REQUIRED'
-                  : recoveryStatus.recovering
-                  ? 'RECOVERING CONTRACT'
-                  : sessionStatus.label}
-              </span>
-            </div>
-
-            {recoveryBackoffUi.exhausted &&
-              recoveryStatus.hasContract &&
-              !recoveryStatus.settled && (
-                <div className="border border-rose-700/50 bg-rose-950/20 rounded-2xl p-5">
-                  <p className="text-sm font-black text-rose-300">
-                    Automatic contract recovery is paused.
-                  </p>
-
-                  <p className="mt-2 text-xs text-slate-400">
-                    The contract ID remains remembered after the
-                    automatic retry limit.
-                  </p>
-
-                  <button
-                    type="button"
-                    onClick={
-                      retryContractRecovery
-                    }
-                    className="mt-4 w-full py-3 bg-amber-400 text-black font-black rounded-xl"
-                  >
-                    RETRY RECOVERY
-                  </button>
-                </div>
+              {buyError && (
+                <Alert>
+                  ⚠️ {buyError}
+                </Alert>
               )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="lg:col-span-2 bg-[#0f1522] border border-slate-800 rounded-2xl p-6 space-y-6">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <Field label="Synthetic Asset">
-                    <select
-                      value={symbol}
-                      onChange={(event) =>
-                        changeSymbol(
-                          event.target.value
-                        )
-                      }
-                      disabled={
-                        isAutoBotRunning ||
-                        isContractOpen ||
-                        proposalLoading ||
-                        buyLoading ||
-                        (recoveryStatus.hasContract &&
-                          !recoveryStatus.settled)
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    >
-                      <option value="R_100">
-                        Volatility 100
-                      </option>
-                      <option value="R_50">
-                        Volatility 50
-                      </option>
-                      <option value="R_25">
-                        Volatility 25
-                      </option>
-                      <option value="1HZ100V">
-                        Volatility 100 (1s)
-                      </option>
-                    </select>
-                  </Field>
-
-                  <Field label="Strategy">
-                    <select
-                      value={strategy}
-                      onChange={(event) => {
-                        clearManualProposal();
-                        setStrategy(
-                          event.target.value
-                        );
-                      }}
-                      disabled={
-                        isAutoBotRunning ||
-                        isContractOpen ||
-                        proposalLoading ||
-                        buyLoading
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    >
-                      <option value="DIGITDIFF">
-                        Digit Differs
-                      </option>
-                      <option value="DIGITMATCH">
-                        Digit Matches
-                      </option>
-                      <option value="DIGITEVEN">
-                        Digit Even
-                      </option>
-                      <option value="DIGITODD">
-                        Digit Odd
-                      </option>
-                      <option value="DIGITOVER">
-                        Digit Over
-                      </option>
-                      <option value="DIGITUNDER">
-                        Digit Under
-                      </option>
-                    </select>
-                  </Field>
-
-                  {needsPredictionDigit && (
-                    <Field label="Prediction / Barrier">
-                      <input
-                        type="number"
-                        min="0"
-                        max="9"
-                        value={
-                          predictionDigit
-                        }
-                        onChange={(
-                          event
-                        ) => {
-                          clearManualProposal();
-                          setPredictionDigit(
-                            event.target.value
-                          );
-                        }}
-                        disabled={
-                          isAutoBotRunning ||
-                          proposalLoading ||
-                          buyLoading
-                        }
-                        className={
-                          INPUT_CLASS
-                        }
-                      />
-                    </Field>
-                  )}
-
-                  <Field label="Minimum Confidence %">
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      value={
-                        minimumConfidence
-                      }
-                      onChange={(event) =>
-                        setMinimumConfidence(
-                          event.target.value
-                        )
-                      }
-                      disabled={
-                        isAutoBotRunning
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    />
-                  </Field>
-
-                  <Field label="Base Stake">
-                    <input
-                      type="number"
-                      min="0.35"
-                      step="0.01"
-                      value={baseStake}
-                      onChange={(event) => {
-                        clearManualProposal();
-
-                        setBaseStake(
-                          event.target.value
-                        );
-
-                        if (
-                          !isAutoBotRunning
-                        ) {
-                          setCurrentStake(
-                            event.target.value
-                          );
-                        }
-                      }}
-                      disabled={
-                        isAutoBotRunning
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    />
-                  </Field>
-
-                  <Field label="Current Stake">
-                    <input
-                      value={currentStake}
-                      readOnly
-                      className={`${INPUT_CLASS} text-amber-400`}
-                    />
-                  </Field>
-
-                  <Field label="Maximum Stake">
-                    <input
-                      type="number"
-                      min="0.35"
-                      step="0.01"
-                      value={maxStake}
-                      onChange={(event) =>
-                        setMaxStake(
-                          event.target.value
-                        )
-                      }
-                      disabled={
-                        isAutoBotRunning
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    />
-                  </Field>
-
-                  <Field label="Duration (Ticks)">
-                    <input
-                      type="number"
-                      min="1"
-                      max="10"
-                      value={duration}
-                      onChange={(event) => {
-                        clearManualProposal();
-
-                        setDuration(
-                          event.target.value
-                        );
-                      }}
-                      disabled={
-                        isAutoBotRunning
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    />
-                  </Field>
-
-                  <Field label="Martingale Multiplier">
-                    <input
-                      type="number"
-                      min="1"
-                      step="0.1"
-                      value={martingale}
-                      onChange={(event) =>
-                        setMartingale(
-                          event.target.value
-                        )
-                      }
-                      disabled={
-                        isAutoBotRunning
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    />
-                  </Field>
-
-                  <Field label="Maximum Trades">
-                    <input
-                      type="number"
-                      min="1"
-                      value={maxTrades}
-                      onChange={(event) =>
-                        setMaxTrades(
-                          event.target.value
-                        )
-                      }
-                      disabled={
-                        isAutoBotRunning
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    />
-                  </Field>
-
-                  <Field label="Cooldown Seconds">
-                    <input
-                      type="number"
-                      min="0"
-                      value={
-                        cooldownSeconds
-                      }
-                      onChange={(event) =>
-                        setCooldownSeconds(
-                          event.target.value
-                        )
-                      }
-                      disabled={
-                        isAutoBotRunning
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    />
-                  </Field>
-
-                  <Field label="Take Profit">
-                    <input
-                      type="number"
-                      value={takeProfit}
-                      onChange={(event) =>
-                        setTakeProfit(
-                          event.target.value
-                        )
-                      }
-                      disabled={
-                        isAutoBotRunning
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    />
-                  </Field>
-
-                  <Field label="Stop Loss">
-                    <input
-                      type="number"
-                      value={stopLoss}
-                      onChange={(event) =>
-                        setStopLoss(
-                          event.target.value
-                        )
-                      }
-                      disabled={
-                        isAutoBotRunning
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    />
-                  </Field>
-
-                  <Field label="Max Consecutive Losses">
-                    <input
-                      type="number"
-                      min="1"
-                      value={
-                        maxConsecutiveLosses
-                      }
-                      onChange={(event) =>
-                        setMaxConsecutiveLosses(
-                          event.target.value
-                        )
-                      }
-                      disabled={
-                        isAutoBotRunning
-                      }
-                      className={
-                        INPUT_CLASS
-                      }
-                    />
-                  </Field>
-                </div>
-
-                {buyError && (
-                  <Alert>⚠️ {buyError}</Alert>
-                )}
-
-                {proposalError && (
-                  <Alert>
-                    ⚠️ {proposalError}
-                  </Alert>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {!isAutoBotRunning ? (
-                    <button
-                      type="button"
-                      onClick={startAutoBot}
-                      disabled={
-                        !isDemoAccount ||
-                        !isTradingConnected ||
-                        isContractOpen ||
-                        emergencyStopped ||
-                        proposalLoading ||
-                        buyLoading ||
-                        (recoveryStatus.hasContract &&
-                          !recoveryStatus.settled)
-                      }
-                      className="py-4 bg-emerald-500 disabled:opacity-40 text-black font-black rounded-xl"
-                    >
-                      ▶ START SAFE SIGNAL BOT
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        stopAutoBot(
-                          'Stopped manually'
-                        )
-                      }
-                      className="py-4 bg-amber-500 text-black font-black rounded-xl"
-                    >
-                      ⏹ STOP BOT
-                    </button>
-                  )}
-
+              <div className="grid sm:grid-cols-2 gap-3 mt-6">
+                {!isAutoBotRunning ? (
                   <button
-                    type="button"
-                    onClick={
-                      emergencyStop
-                    }
+                    onClick={startAutoBot}
                     disabled={
+                      !isDemoAccount ||
+                      !isTradingConnected ||
+                      isContractOpen ||
+                      pendingBuyStatus.blocking ||
                       emergencyStopped
                     }
-                    className="py-4 bg-rose-600 disabled:opacity-40 text-white font-black rounded-xl"
+                    className="py-4 bg-emerald-500 disabled:opacity-40 text-black font-black rounded-xl"
                   >
-                    🛑 EMERGENCY STOP
+                    ▶ START SAFE SIGNAL BOT
                   </button>
-                </div>
-
-                {emergencyStopped && (
+                ) : (
                   <button
-                    type="button"
-                    onClick={
-                      clearEmergencyStop
+                    onClick={() =>
+                      stopAutoBot(
+                        'Stopped manually'
+                      )
                     }
-                    disabled={
-                      isContractOpen ||
-                      buyLoading
-                    }
-                    className="w-full py-3 bg-slate-700 disabled:opacity-40 font-black rounded-xl"
+                    className="py-4 bg-amber-500 text-black font-black rounded-xl"
                   >
-                    CLEAR EMERGENCY STOP
+                    ⏹ STOP BOT
                   </button>
                 )}
 
                 <button
-                  type="button"
-                  onClick={
-                    resetSessionStats
-                  }
+                  onClick={emergencyStop}
                   disabled={
-                    isAutoBotRunning ||
-                    isContractOpen ||
-                    proposalLoading ||
-                    buyLoading ||
-                    (recoveryStatus.hasContract &&
-                      !recoveryStatus.settled)
+                    emergencyStopped
                   }
-                  className="w-full py-3 bg-slate-800 disabled:opacity-40 font-black rounded-xl"
+                  className="py-4 bg-rose-600 disabled:opacity-40 text-white font-black rounded-xl"
                 >
-                  RESET SESSION
+                  🛑 EMERGENCY STOP
                 </button>
+              </div>
 
-                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  <StatusCard
-                    label="Bot Status"
-                    value={
-                      autoBotStatus
-                    }
-                    accent="text-cyan-400"
-                  />
+              {!isAutoBotRunning &&
+                !isContractOpen &&
+                !pendingBuyStatus.blocking && (
+                  <div className="border-t border-slate-800 mt-6 pt-6 grid sm:grid-cols-2 gap-3">
+                    <button
+                      onClick={
+                        requestManualProposal
+                      }
+                      disabled={
+                        proposalLoading ||
+                        !isTradingConnected
+                      }
+                      className="py-3 bg-cyan-500 disabled:opacity-40 text-black font-black rounded-xl"
+                    >
+                      GET PROPOSAL
+                    </button>
 
-                  <StatusCard
-                    label="Request Guard"
-                    value={
-                      requestStatusLabel
-                    }
-                    accent="text-emerald-400"
-                  />
-
-                  <StatusCard
-                    label="Persisted Recovery"
-                    value={
-                      persistedRecoveryLabel
-                    }
-                    accent="text-cyan-400"
-                  />
-
-                  <StatusCard
-                    label="Socket Error Guard"
-                    value={
-                      socketErrorLabel
-                    }
-                    accent={
-                      socketErrorLabel ===
-                      'No socket errors'
-                        ? 'text-emerald-400'
-                        : 'text-amber-400'
-                    }
-                  />
-
-                  <StatusCard
-                    label="Contract Recovery"
-                    value={
-                      recoveryLabel
-                    }
-                    accent="text-emerald-400"
-                  />
-
-                  <StatusCard
-                    label="Recovery Backoff"
-                    value={
-                      recoveryBackoffUi.label
-                    }
-                    accent="text-emerald-400"
-                  />
-                </div>
-
-                {activeContract && (
-                  <div className="border border-amber-500/30 bg-amber-500/5 rounded-2xl p-5">
-                    <div className="flex justify-between flex-wrap gap-3">
-                      <div>
-                        <p className="text-xs uppercase font-black text-amber-400">
-                          Contract Monitor
-                        </p>
-
-                        <p className="text-xs font-mono text-slate-500 mt-1">
-                          #
-                          {
-                            activeContract.contractId
-                          }
-                        </p>
-                      </div>
-
-                      <span className="px-3 py-1 rounded-full bg-slate-800 text-xs font-black">
-                        {contractStatus}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
-                      <StatBox
-                        label="Buy Price"
-                        value={
-                          activeContract.buyPrice ??
-                          '-'
-                        }
-                      />
-
-                      <StatBox
-                        label="Payout"
-                        value={
-                          activeContract.payout ??
-                          '-'
-                        }
-                      />
-
-                      <StatBox
-                        label="Current Spot"
-                        value={
-                          activeContract.currentSpot ??
-                          '-'
-                        }
-                        accent="text-cyan-400"
-                      />
-
-                      <StatBox
-                        label="Live P/L"
-                        value={
-                          contractProfit !==
-                          null
-                            ? `${
-                                Number(
-                                  contractProfit
-                                ) >= 0
-                                  ? '+'
-                                  : ''
-                              }${Number(
-                                contractProfit
-                              ).toFixed(2)}`
-                            : '-'
-                        }
-                        accent={
-                          Number(
-                            contractProfit
-                          ) >= 0
-                            ? 'text-emerald-400'
-                            : 'text-rose-400'
-                        }
-                      />
-                    </div>
+                    <button
+                      onClick={
+                        buyManualDemoProposal
+                      }
+                      disabled={
+                        !proposalData ||
+                        !proposalFreshnessStatus.fresh ||
+                        buyLoading
+                      }
+                      className="py-3 bg-amber-400 disabled:opacity-40 text-black font-black rounded-xl"
+                    >
+                      {buyLoading
+                        ? 'BUYING...'
+                        : 'BUY DEMO CONTRACT'}
+                    </button>
                   </div>
                 )}
 
-                {!isAutoBotRunning &&
-                  !isContractOpen &&
-                  !emergencyStopped &&
-                  !(
-                    recoveryStatus.hasContract &&
-                    !recoveryStatus.settled
-                  ) && (
-                    <div className="border-t border-slate-800 pt-6">
-                      <p className="text-xs uppercase font-black text-slate-500 mb-3">
-                        Manual Demo Test
-                      </p>
+              {activeContract && (
+                <div className="mt-6 border border-amber-500/30 bg-amber-500/5 rounded-2xl p-5">
+                  <p className="text-xs text-amber-400 font-black">
+                    CONTRACT #
+                    {activeContract.contractId}
+                  </p>
 
-                      <div className="grid sm:grid-cols-2 gap-3">
-                        <button
-                          type="button"
-                          onClick={
-                            requestManualProposal
-                          }
-                          disabled={
-                            proposalLoading ||
-                            buyLoading ||
-                            !isTradingConnected
-                          }
-                          className="py-3 bg-cyan-500 disabled:opacity-40 text-black font-black rounded-xl"
-                        >
-                          {proposalLoading
-                            ? 'REQUESTING...'
-                            : proposalFreshnessStatus.expired
-                            ? 'GET FRESH PROPOSAL'
-                            : 'GET PROPOSAL'}
-                        </button>
+                  <p className="mt-2 font-black">
+                    {contractStatus}
+                  </p>
 
-                        <button
-                          type="button"
-                          onClick={
-                            buyManualDemoProposal
-                          }
-                          disabled={
-                            !proposalData ||
-                            !proposalFreshnessStatus.fresh ||
-                            buyLoading ||
-                            proposalLoading ||
-                            !isDemoAccount
-                          }
-                          className="py-3 bg-amber-400 disabled:opacity-40 text-black font-black rounded-xl"
-                        >
-                          {buyLoading
-                            ? 'BUYING...'
-                            : proposalFreshnessStatus.expired
-                            ? 'PROPOSAL EXPIRED'
-                            : 'BUY DEMO CONTRACT'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-              </div>
-
-              <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-5">
-                <h3 className="text-xs uppercase font-black">
-                  Session Performance
-                </h3>
-
-                <div className="grid grid-cols-2 gap-2 mt-4">
-                  <StatBox
-                    label="Trades"
-                    value={tradeCount}
-                  />
-
-                  <StatBox
-                    label="Win Rate"
-                    value={`${winRate}%`}
-                    accent="text-cyan-400"
-                  />
-
-                  <StatBox
-                    label="Wins"
-                    value={winCount}
-                    accent="text-emerald-400"
-                  />
-
-                  <StatBox
-                    label="Losses"
-                    value={lossCount}
-                    accent="text-rose-400"
-                  />
-
-                  <StatBox
-                    label="Net P/L"
-                    value={`${
-                      totalProfit >= 0
-                        ? '+'
-                        : ''
-                    }${totalProfit.toFixed(
-                      2
-                    )}`}
-                    accent={
-                      totalProfit >= 0
-                        ? 'text-emerald-400'
-                        : 'text-rose-400'
-                    }
-                  />
-
-                  <StatBox
-                    label="Loss Streak"
-                    value={
-                      consecutiveLosses
-                    }
-                    accent="text-amber-400"
-                  />
+                  <p className="mt-2 font-mono text-emerald-400">
+                    P/L:{' '}
+                    {contractProfit !==
+                    null
+                      ? Number(
+                          contractProfit
+                        ).toFixed(2)
+                      : '-'}
+                  </p>
                 </div>
-
-                <div className="mt-4 bg-[#080b11] border border-slate-800 rounded-xl p-3 max-h-[520px] overflow-y-auto space-y-2">
-                  {botLogs.length === 0 ? (
-                    <p className="text-center text-xs text-slate-600 py-10">
-                      Bot activity will appear here.
-                    </p>
-                  ) : (
-                    botLogs.map(
-                      (log, index) => (
-                        <div
-                          key={`${log.time}-${index}`}
-                          className="border border-slate-800 p-2 rounded-lg text-xs font-mono"
-                        >
-                          <span className="text-slate-600">
-                            [{log.time}]{' '}
-                          </span>
-
-                          <span
-                            className={
-                              log.type ===
-                              'error'
-                                ? 'text-rose-300'
-                                : log.type ===
-                                  'success'
-                                ? 'text-emerald-300'
-                                : log.type ===
-                                  'trade'
-                                ? 'text-cyan-300'
-                                : 'text-slate-400'
-                            }
-                          >
-                            {log.message}
-                          </span>
-                        </div>
-                      )
-                    )
-                  )}
-                </div>
-              </div>
+              )}
             </div>
           </div>
         )}
 
-        {activeTab ===
-          'history' && (
+        {activeTab === 'history' && (
           <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-6">
             <h2 className="text-xl font-black">
               Session Trade History
@@ -5379,56 +4916,22 @@ export default function BinarySpotPro() {
 
             {tradeHistory.length ===
             0 ? (
-              <div className="py-16 text-center text-sm text-slate-600">
+              <p className="py-14 text-center text-slate-500">
                 No settled contracts yet.
-              </div>
+              </p>
             ) : (
               <div className="mt-6 space-y-3">
                 {tradeHistory.map(
                   (trade) => (
                     <div
                       key={trade.id}
-                      className="grid grid-cols-2 md:grid-cols-6 gap-3 bg-[#080b11] border border-slate-800 rounded-xl p-4"
+                      className="border border-slate-800 rounded-xl p-4"
                     >
-                      <HistoryValue
-                        label="Contract"
-                        value={`#${trade.id}`}
-                      />
-
-                      <HistoryValue
-                        label="Result"
-                        value={trade.result}
-                      />
-
-                      <HistoryValue
-                        label="Stake"
-                        value={Number(
-                          trade.stake
-                        ).toFixed(2)}
-                      />
-
-                      <HistoryValue
-                        label="P/L"
-                        value={`${
-                          trade.profit >= 0
-                            ? '+'
-                            : ''
-                        }${trade.profit.toFixed(
-                          2
-                        )}`}
-                      />
-
-                      <HistoryValue
-                        label="Strategy"
-                        value={
-                          trade.strategy
-                        }
-                      />
-
-                      <HistoryValue
-                        label="Time"
-                        value={trade.time}
-                      />
+                      <p className="font-mono">
+                        #{trade.id} —{' '}
+                        {trade.result} —{' '}
+                        {trade.profit}
+                      </p>
                     </div>
                   )
                 )}
@@ -5439,37 +4942,36 @@ export default function BinarySpotPro() {
 
         {activeTab ===
           'analyzer' && (
-          <div className="space-y-6">
-            <div className="bg-[#0f1522] border border-slate-800 p-6 rounded-2xl">
-              <h2 className="text-xl font-black">
-                Digit Analyzer
-              </h2>
+          <div className="bg-[#0f1522] border border-slate-800 p-6 rounded-2xl">
+            <h2 className="text-xl font-black">
+              Digit Analyzer
+            </h2>
 
-              <p className="text-xs text-slate-400 mt-1">
-                {analysis.sampleSize} recent ticks on {symbol}
-              </p>
+            <p className="text-xs text-slate-400 mt-2">
+              {analysis.sampleSize} recent
+              ticks
+            </p>
 
-              <div className="grid grid-cols-5 sm:grid-cols-10 gap-2 mt-6">
-                {analysis.percentages.map(
-                  (item) => (
-                    <div
-                      key={item.digit}
-                      className="bg-[#080b11] border border-slate-800 rounded-xl p-3 text-center"
-                    >
-                      <p className="font-black">
-                        {item.digit}
-                      </p>
+            <div className="grid grid-cols-5 sm:grid-cols-10 gap-2 mt-6">
+              {analysis.percentages.map(
+                (item) => (
+                  <div
+                    key={item.digit}
+                    className="bg-[#080b11] border border-slate-800 rounded-xl p-3 text-center"
+                  >
+                    <p className="font-black">
+                      {item.digit}
+                    </p>
 
-                      <p className="text-xs text-cyan-400 mt-2">
-                        {
-                          item.percentage
-                        }
-                        %
-                      </p>
-                    </div>
-                  )
-                )}
-              </div>
+                    <p className="text-xs text-cyan-400 mt-2">
+                      {
+                        item.percentage
+                      }
+                      %
+                    </p>
+                  </div>
+                )
+              )}
             </div>
           </div>
         )}
@@ -5487,6 +4989,7 @@ function Field({
       <label className="text-xs text-slate-400 font-bold">
         {label}
       </label>
+
       {children}
     </div>
   );
@@ -5504,45 +5007,8 @@ function StatBox({
       </p>
 
       <p
-        className={`mt-1 text-lg font-black font-mono ${accent}`}
+        className={`mt-1 text-sm font-black font-mono break-words ${accent}`}
       >
-        {value}
-      </p>
-    </div>
-  );
-}
-
-function StatusCard({
-  label,
-  value,
-  accent = 'text-white',
-}) {
-  return (
-    <div className="border border-slate-800 rounded-2xl p-5">
-      <p className="text-[10px] uppercase text-slate-500 font-black">
-        {label}
-      </p>
-
-      <p
-        className={`mt-2 font-mono font-black text-xs ${accent}`}
-      >
-        {value}
-      </p>
-    </div>
-  );
-}
-
-function HistoryValue({
-  label,
-  value,
-}) {
-  return (
-    <div>
-      <p className="text-[9px] uppercase text-slate-600">
-        {label}
-      </p>
-
-      <p className="mt-1 text-xs font-mono font-black break-all">
         {value}
       </p>
     </div>
@@ -5584,13 +5050,7 @@ function AccountCard({
     accountType === 'demo';
 
   return (
-    <div
-      className={`border rounded-xl px-3 py-2 text-right ${
-        demo
-          ? 'border-cyan-700 bg-cyan-950/20'
-          : 'border-rose-700 bg-rose-950/20'
-      }`}
-    >
+    <div className="border border-slate-700 rounded-xl px-3 py-2 text-right">
       <p
         className={`text-[9px] uppercase font-black ${
           demo
@@ -5627,7 +5087,7 @@ function Alert({
   children,
 }) {
   return (
-    <div className="border border-rose-800 bg-rose-950/30 p-4 rounded-xl text-rose-300 text-sm">
+    <div className="mt-4 border border-rose-800 bg-rose-950/30 p-4 rounded-xl text-rose-300 text-sm">
       {children}
     </div>
   );
