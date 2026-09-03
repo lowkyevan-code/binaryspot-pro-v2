@@ -168,6 +168,9 @@ export default function BinarySpotPro() {
   const [isConnecting, setIsConnecting] =
     useState(false);
 
+  const [isLoggingOut, setIsLoggingOut] =
+    useState(false);
+
   const [isAuthorized, setIsAuthorized] =
     useState(false);
 
@@ -2417,7 +2420,7 @@ export default function BinarySpotPro() {
           );
 
           addBotLog(
-            'Authenticated Deriv trading socket connected.',
+            `Authenticated Deriv trading socket connected to ${accountIdRef.current || 'active account'}.`,
             'system'
           );
 
@@ -2847,12 +2850,22 @@ export default function BinarySpotPro() {
                 'balance' &&
               data.balance
             ) {
+              if (
+                data.balance.loginid &&
+                accountIdRef.current &&
+                data.balance.loginid !==
+                  accountIdRef.current
+              ) {
+                return;
+              }
+
               setBalance(
                 data.balance.balance
               );
 
               const nextCurrency =
                 data.balance.currency ||
+                currencyRef.current ||
                 'USD';
 
               setCurrency(nextCurrency);
@@ -3045,7 +3058,7 @@ export default function BinarySpotPro() {
                 );
 
                 addBotLog(
-                  `AUTO BUY sent | Req #${buyReqId}`,
+                  `AUTO BUY sent | Account ${accountIdRef.current} | Req #${buyReqId}`,
                   'trade'
                 );
 
@@ -3291,7 +3304,7 @@ export default function BinarySpotPro() {
                   isAutoOwner(owner)
                     ? 'AUTO'
                     : 'MANUAL'
-                } demo contract purchased #${contractId}`,
+                } demo contract purchased #${contractId} on ${accountIdRef.current}`,
                 'success'
               );
 
@@ -3516,6 +3529,10 @@ export default function BinarySpotPro() {
 
         ws.onerror = () => {
           setIsTradingConnected(false);
+
+          setSocketErrorLabel(
+            'Trading socket connection error'
+          );
         };
 
         ws.onclose = () => {
@@ -3863,18 +3880,36 @@ export default function BinarySpotPro() {
               cache: 'no-store',
             });
 
-          const data =
-            await response.json();
+          let data = null;
+
+          try {
+            data =
+              await response.json();
+          } catch {
+            data = null;
+          }
 
           if (
             !response.ok ||
-            !data.authenticated
+            !data?.authenticated
           ) {
+            closeTradingSocket();
+
             setIsAuthorized(false);
+
+            setAccounts([]);
+            setSelectedAccountId('');
+            setAccountId('');
+            accountIdRef.current = '';
+            setAccountType('');
+            accountTypeRef.current = '';
+            setBalance(null);
+            setCurrency('USD');
+            currencyRef.current = 'USD';
 
             if (
               response.status !== 401 &&
-              data.error
+              data?.error
             ) {
               setAuthError(data.error);
             }
@@ -3884,13 +3919,18 @@ export default function BinarySpotPro() {
 
           setIsAuthorized(true);
 
-          setAccounts(
+          const availableAccounts =
             Array.isArray(data.accounts)
               ? data.accounts
-              : []
+              : [];
+
+          setAccounts(
+            availableAccounts
           );
 
           if (!data.account) {
+            closeTradingSocket();
+
             setAuthError(
               'No Deriv Options account was found.'
             );
@@ -3901,7 +3941,9 @@ export default function BinarySpotPro() {
             data.account.id || '';
 
           const nextAccountType =
-            data.account.type || '';
+            String(
+              data.account.type || ''
+            ).toLowerCase();
 
           const nextCurrency =
             data.account.currency ||
@@ -3999,7 +4041,9 @@ export default function BinarySpotPro() {
           );
 
           setAutoBotStatus(
-            'Standby'
+            nextAccountType === 'demo'
+              ? 'Standby'
+              : 'Real account selected — execution blocked'
           );
 
           const storedSession =
@@ -4438,15 +4482,25 @@ export default function BinarySpotPro() {
             connectTradingSocket(
               data.wsUrl
             );
+          } else {
+            setIsTradingConnected(false);
+
+            setAuthError(
+              'Deriv account loaded, but the authenticated trading connection is unavailable.'
+            );
           }
         } catch (error) {
           console.error(error);
 
+          closeTradingSocket();
+
           setAuthError(
-            'Unable to load your Deriv account.'
+            error?.message ||
+              'Unable to load your Deriv account.'
           );
         } finally {
           setIsLoading(false);
+          setIsConnecting(false);
         }
       },
       [
@@ -4454,6 +4508,7 @@ export default function BinarySpotPro() {
         clearRecoveryTimer,
         clearReconciliationRequests,
         clearStoredPendingBuy,
+        closeTradingSocket,
         connectTradingSocket,
         syncLifecycleLabel,
         syncPendingBuyReconciliation,
@@ -4524,7 +4579,9 @@ export default function BinarySpotPro() {
       if (
         !newAccountId ||
         newAccountId ===
-          selectedAccountId
+          selectedAccountId ||
+        isLoading ||
+        isLoggingOut
       ) {
         return;
       }
@@ -4557,19 +4614,274 @@ export default function BinarySpotPro() {
         return;
       }
 
-      stopAutoBot(
-        'Switching accounts'
-      );
+      try {
+        setAuthError('');
 
-      clearManualProposal();
+        if (
+          autoBotRunningRef.current
+        ) {
+          stopAutoBot(
+            'Switching Deriv account'
+          );
+        }
 
-      setSessionPersistenceReady(
-        false
-      );
+        clearManualProposal();
 
-      await loadDerivSession(
-        newAccountId
-      );
+        setSessionPersistenceReady(
+          false
+        );
+
+        setSelectedAccountId(
+          newAccountId
+        );
+
+        setBalance(null);
+
+        setAutoBotStatus(
+          'Switching Deriv account'
+        );
+
+        addBotLog(
+          `Switching Deriv account to ${newAccountId}.`,
+          'system'
+        );
+
+        closeTradingSocket();
+
+        await loadDerivSession(
+          newAccountId
+        );
+      } catch (error) {
+        console.error(
+          'Account switch error:',
+          error
+        );
+
+        setAuthError(
+          error?.message ||
+            'Unable to switch Deriv accounts.'
+        );
+      }
+    };
+
+  const logoutDeriv =
+    async () => {
+      if (
+        isLoggingOut ||
+        isLoading
+      ) {
+        return;
+      }
+
+      const requestStatus =
+        getRequestGuardStatus(
+          requestGuardRef.current
+        );
+
+      const recoveryStatus =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
+
+      const pendingStatus =
+        getPendingBuyRecoveryStatus(
+          pendingBuyRecoveryRef.current
+        );
+
+      if (
+        contractOpenRef.current ||
+        requestStatus.buyPending ||
+        pendingStatus.blocking ||
+        (recoveryStatus.hasContract &&
+          !recoveryStatus.settled)
+      ) {
+        setAuthError(
+          'Resolve the active, recovering, or uncertain BUY before logging out of Deriv.'
+        );
+        return;
+      }
+
+      try {
+        setIsLoggingOut(true);
+        setAuthError('');
+
+        if (
+          autoBotRunningRef.current
+        ) {
+          stopAutoBot(
+            'Deriv logout'
+          );
+        }
+
+        clearManualProposal();
+        closeTradingSocket();
+
+        const response = await fetch(
+          '/api/auth/deriv/logout',
+          {
+            method: 'POST',
+            credentials: 'include',
+            cache: 'no-store',
+          }
+        );
+
+        let data = null;
+
+        try {
+          data =
+            await response.json();
+        } catch {
+          data = null;
+        }
+
+        if (!response.ok) {
+          throw new Error(
+            data?.error ||
+              'Unable to log out of Deriv.'
+          );
+        }
+
+        clearSessionState();
+        clearContractRecoveryRecord();
+        clearPendingBuyRecoveryRecord();
+
+        autoBotRunningRef.current =
+          false;
+
+        emergencyStoppedRef.current =
+          false;
+
+        proposalPendingRef.current =
+          false;
+
+        buyPendingRef.current =
+          false;
+
+        contractOpenRef.current =
+          false;
+
+        cooldownUntilRef.current = 0;
+
+        accountIdRef.current = '';
+        accountTypeRef.current = '';
+        currencyRef.current = 'USD';
+
+        lifecycleRef.current =
+          createTradeLifecycle();
+
+        requestGuardRef.current =
+          resetRequestGuard();
+
+        pendingBuyRecoveryRef.current =
+          clearPendingBuyRecovery();
+
+        pendingBuyReconciliationRef.current =
+          clearPendingBuyReconciliation();
+
+        recoveryRef.current =
+          clearContractRecovery();
+
+        recoveryBackoffRef.current =
+          resetRecoveryBackoff(
+            recoveryBackoffRef.current
+          );
+
+        proposalFreshnessRef.current =
+          clearProposalFreshness();
+
+        clearReconciliationRequests();
+        clearRecoveryTimer();
+
+        setIsAuthorized(false);
+        setIsTradingConnected(false);
+
+        setAccounts([]);
+        setSelectedAccountId('');
+
+        setAccountId('');
+        setAccountType('');
+
+        setBalance(null);
+        setCurrency('USD');
+
+        setIsAutoBotRunning(false);
+        setEmergencyStopped(false);
+
+        setProposalLoading(false);
+        setBuyLoading(false);
+
+        setProposalData(null);
+        setProposalClock(Date.now());
+
+        setProposalError('');
+        setBuyError('');
+
+        setActiveContract(null);
+        setContractProfit(null);
+
+        setContractStatus(
+          'No active contract'
+        );
+
+        setAutoBotStatus(
+          'Deriv disconnected'
+        );
+
+        setStoredSessionLabel(
+          'No stored session'
+        );
+
+        setPersistedRecoveryLabel(
+          'No persisted contract'
+        );
+
+        setPendingBuyLabel(
+          'No pending BUY ambiguity'
+        );
+
+        setPersistedPendingBuyLabel(
+          'No stored BUY ambiguity'
+        );
+
+        setReconciliationLabel(
+          'Reconciliation idle'
+        );
+
+        setReconciliationReason('');
+        setReconciliationRunning(false);
+
+        setSocketErrorLabel(
+          'No socket errors'
+        );
+
+        setSessionPersistenceReady(
+          false
+        );
+
+        syncLifecycleLabel();
+        syncRequestStatus();
+        syncPendingBuyRecovery();
+        syncPendingBuyReconciliation();
+        syncRecoveryLabel();
+        syncRecoveryBackoff();
+
+        addBotLog(
+          'Deriv OAuth session disconnected.',
+          'system'
+        );
+      } catch (error) {
+        console.error(
+          'Deriv logout error:',
+          error
+        );
+
+        setAuthError(
+          error?.message ||
+            'Unable to log out of Deriv.'
+        );
+      } finally {
+        setIsLoggingOut(false);
+      }
     };
 
   useEffect(() => {
@@ -4924,6 +5236,16 @@ export default function BinarySpotPro() {
     }
 
     if (
+      accountTypeRef.current !==
+      'demo'
+    ) {
+      setBuyError(
+        'Real-money bot execution is currently blocked. Switch to a Demo account to run Bot Studio.'
+      );
+      return;
+    }
+
+    if (
       emergencyStoppedRef.current
     ) {
       setBuyError(
@@ -4996,11 +5318,11 @@ export default function BinarySpotPro() {
     setIsAutoBotRunning(true);
 
     setAutoBotStatus(
-      'Scanning Market'
+      `Scanning Market — ${accountIdRef.current}`
     );
 
     addBotLog(
-      `PENDING BUY GUARD ACTIVE — ${strategy}`,
+      `PENDING BUY GUARD ACTIVE — ${strategy} — Account ${accountIdRef.current}`,
       'system'
     );
 
@@ -5072,6 +5394,16 @@ export default function BinarySpotPro() {
     ) {
       setProposalError(
         'Emergency Stop is active.'
+      );
+      return;
+    }
+
+    if (
+      accountTypeRef.current !==
+      'demo'
+    ) {
+      setProposalError(
+        'Real-money execution is currently blocked. Switch to a Demo account to request a tradable proposal.'
       );
       return;
     }
@@ -5631,9 +5963,15 @@ export default function BinarySpotPro() {
                 active={
                   isTradingConnected
                 }
-                activeLabel="Trading Socket Active"
+                activeLabel={
+                  isLoading
+                    ? 'Trading Account Loading'
+                    : 'Trading Socket Active'
+                }
                 inactiveLabel={
-                  pendingBuyStatus.blocking
+                  isLoading
+                    ? 'Trading Account Loading'
+                    : pendingBuyStatus.blocking
                     ? 'BUY Reconciliation Required'
                     : recoveryStatus.needsRecovery
                     ? 'Trading Socket Recovering'
@@ -5677,23 +6015,54 @@ export default function BinarySpotPro() {
           </div>
 
           {!isAuthorized ? (
-            <button
-              type="button"
-              onClick={connectDeriv}
-              disabled={
-                isLoading ||
-                isConnecting
-              }
-              className="px-4 py-3 bg-emerald-500 disabled:opacity-40 text-black font-black text-xs rounded-xl"
-            >
-              CONNECT DERIV
-            </button>
+            <div className="flex flex-col items-end gap-2">
+              <button
+                type="button"
+                onClick={connectDeriv}
+                disabled={
+                  isLoading ||
+                  isConnecting
+                }
+                className="px-4 py-3 bg-emerald-500 disabled:opacity-40 text-black font-black text-xs rounded-xl"
+              >
+                {isLoading
+                  ? 'CHECKING SESSION...'
+                  : isConnecting
+                  ? 'CONNECTING...'
+                  : 'CONNECT DERIV'}
+              </button>
+
+              {!isLoading && (
+                <p className="text-[9px] text-slate-500">
+                  Secure Deriv OAuth
+                </p>
+              )}
+            </div>
           ) : (
             <AccountCard
-              accountType={accountType}
+              accounts={accounts}
+              selectedAccountId={
+                selectedAccountId
+              }
+              accountType={
+                accountType
+              }
               accountId={accountId}
               balance={balance}
               currency={currency}
+              isTradingConnected={
+                isTradingConnected
+              }
+              isLoading={isLoading}
+              isLoggingOut={
+                isLoggingOut
+              }
+              onSwitchAccount={
+                switchAccount
+              }
+              onLogout={
+                logoutDeriv
+              }
             />
           )}
         </div>
@@ -5731,6 +6100,25 @@ export default function BinarySpotPro() {
         {authError && (
           <Alert>⚠️ {authError}</Alert>
         )}
+
+        {isAuthorized &&
+          accountType === 'real' && (
+            <div className="mb-6 border border-amber-700 bg-amber-950/20 rounded-2xl p-4">
+              <p className="font-black text-amber-300 text-sm">
+                REAL ACCOUNT ACTIVE
+              </p>
+
+              <p className="mt-1 text-xs text-slate-400">
+                Account {accountId} is
+                connected for account
+                display and balance updates.
+                BinarySpot contract
+                execution remains blocked
+                until real-money trading is
+                explicitly enabled.
+              </p>
+            </div>
+          )}
 
         {pendingBuyStatus.blocking && (
           <div className="mb-6 border border-rose-700 bg-rose-950/30 rounded-2xl p-5">
@@ -5789,23 +6177,75 @@ export default function BinarySpotPro() {
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Refresh-Safe BUY Protection
+                OAuth Account Protection
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                BinarySpot Remembers Uncertain Purchases Even After Refresh.
+                BinarySpot Keeps Your Deriv Session, Account and BUY Safety State Synchronized.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                Pending demo purchases are
-                preserved before BUY is sent,
-                so refreshing or losing the
-                connection cannot silently
-                erase an unresolved position.
+                Your Deriv OAuth session is
+                restored automatically.
+                Account switching reconnects
+                the authenticated trading
+                socket, refreshes the active
+                balance and keeps Bot Studio
+                tied to the account currently
+                displayed.
               </p>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <StatBox
+                label="Active Account"
+                value={
+                  accountId ||
+                  'Not connected'
+                }
+                accent={
+                  accountType === 'demo'
+                    ? 'text-cyan-400'
+                    : accountType === 'real'
+                    ? 'text-rose-400'
+                    : 'text-slate-400'
+                }
+              />
+
+              <StatBox
+                label="Account Type"
+                value={
+                  accountType
+                    ? accountType.toUpperCase()
+                    : 'NONE'
+                }
+                accent={
+                  accountType === 'demo'
+                    ? 'text-cyan-400'
+                    : accountType === 'real'
+                    ? 'text-rose-400'
+                    : 'text-slate-400'
+                }
+              />
+
+              <StatBox
+                label="Account Balance"
+                value={
+                  balance !== null
+                    ? `${currency} ${Number(
+                        balance
+                      ).toLocaleString(
+                        'en-US',
+                        {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        }
+                      )}`
+                    : 'Loading...'
+                }
+                accent="text-emerald-400"
+              />
+
               <StatBox
                 label="Session"
                 value={
@@ -5922,14 +6362,31 @@ export default function BinarySpotPro() {
         {activeTab === 'bots' && (
           <div className="space-y-6">
             <div className="bg-[#0f1522] border border-slate-800 rounded-2xl p-6">
-              <h2 className="text-xl font-black">
-                Bot Studio
-              </h2>
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-black">
+                    Bot Studio
+                  </h2>
 
-              <p className="mt-2 text-sm text-slate-400">
-                Demo-only execution remains
-                enforced.
-              </p>
+                  <p className="mt-2 text-sm text-slate-400">
+                    Execution is bound to the
+                    account currently shown in
+                    the Deriv account card.
+                  </p>
+                </div>
+
+                <div
+                  className={`rounded-xl border px-3 py-2 text-xs font-black ${
+                    isDemoAccount
+                      ? 'border-cyan-800 bg-cyan-950/20 text-cyan-300'
+                      : 'border-rose-800 bg-rose-950/20 text-rose-300'
+                  }`}
+                >
+                  {isDemoAccount
+                    ? `DEMO EXECUTION — ${accountId}`
+                    : `REAL SELECTED — EXECUTION BLOCKED`}
+                </div>
+              </div>
 
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
                 <Field label="Synthetic Asset">
@@ -6078,6 +6535,12 @@ export default function BinarySpotPro() {
                 </Alert>
               )}
 
+              {proposalError && (
+                <Alert>
+                  ⚠️ {proposalError}
+                </Alert>
+              )}
+
               {emergencyStopped && (
                 <button
                   type="button"
@@ -6097,6 +6560,7 @@ export default function BinarySpotPro() {
                     disabled={
                       !isDemoAccount ||
                       !isTradingConnected ||
+                      isLoading ||
                       isContractOpen ||
                       pendingBuyStatus.blocking ||
                       emergencyStopped
@@ -6129,6 +6593,16 @@ export default function BinarySpotPro() {
                 </button>
               </div>
 
+              {!isDemoAccount && (
+                <div className="mt-4 rounded-xl border border-rose-800 bg-rose-950/20 p-4 text-xs text-rose-300">
+                  Bot execution is disabled
+                  because the active account
+                  shown above is a Real
+                  account. Switch to a Demo
+                  account to trade.
+                </div>
+              )}
+
               {!isAutoBotRunning &&
                 !isContractOpen &&
                 !pendingBuyStatus.blocking && (
@@ -6139,11 +6613,15 @@ export default function BinarySpotPro() {
                       }
                       disabled={
                         proposalLoading ||
-                        !isTradingConnected
+                        !isDemoAccount ||
+                        !isTradingConnected ||
+                        isLoading
                       }
                       className="py-3 bg-cyan-500 disabled:opacity-40 text-black font-black rounded-xl"
                     >
-                      GET PROPOSAL
+                      {proposalLoading
+                        ? 'GETTING PROPOSAL...'
+                        : 'GET PROPOSAL'}
                     </button>
 
                     <button
@@ -6151,6 +6629,7 @@ export default function BinarySpotPro() {
                         buyManualDemoProposal
                       }
                       disabled={
+                        !isDemoAccount ||
                         !proposalData ||
                         !proposalFreshnessStatus.fresh ||
                         buyLoading
@@ -6359,44 +6838,210 @@ function StatusDot({
 }
 
 function AccountCard({
+  accounts,
+  selectedAccountId,
   accountType,
   accountId,
   balance,
   currency,
+  isTradingConnected,
+  isLoading,
+  isLoggingOut,
+  onSwitchAccount,
+  onLogout,
 }) {
   const demo =
     accountType === 'demo';
 
+  const safeAccounts =
+    Array.isArray(accounts)
+      ? accounts.filter(
+          (account) =>
+            account &&
+            (
+              account.id ||
+              account.loginid
+            )
+        )
+      : [];
+
+  const accountOptionLabel =
+    (account) => {
+      const id =
+        account.id ||
+        account.loginid ||
+        'Unknown';
+
+      const rawType =
+        String(
+          account.type || ''
+        ).toLowerCase();
+
+      const isDemo =
+        rawType === 'demo' ||
+        rawType === 'virtual';
+
+      const typeLabel =
+        isDemo
+          ? 'Demo'
+          : 'Real';
+
+      const accountCurrency =
+        account.currency
+          ? ` · ${account.currency}`
+          : '';
+
+      return `${typeLabel} — ${id}${accountCurrency}`;
+    };
+
   return (
-    <div className="border border-slate-700 rounded-xl px-3 py-2 text-right">
-      <p
-        className={`text-[9px] uppercase font-black ${
-          demo
-            ? 'text-cyan-400'
-            : 'text-rose-400'
-        }`}
-      >
-        {demo
-          ? 'Demo Account'
-          : 'Real Account'}
-      </p>
+    <div className="flex flex-wrap items-stretch justify-end gap-3">
+      <div className="min-w-[210px] border border-slate-700 bg-[#080b11] rounded-xl px-3 py-2">
+        <p className="text-[9px] uppercase tracking-wider font-black text-slate-500">
+          Deriv Account
+        </p>
 
-      <p className="text-[10px] font-mono text-slate-400">
-        {accountId}
-      </p>
+        <select
+          value={
+            selectedAccountId ||
+            accountId ||
+            ''
+          }
+          onChange={(event) =>
+            onSwitchAccount?.(
+              event.target.value
+            )
+          }
+          disabled={
+            isLoading ||
+            isLoggingOut ||
+            safeAccounts.length <= 1
+          }
+          className="mt-1 w-full bg-[#080b11] text-xs font-black text-slate-100 outline-none disabled:opacity-50"
+        >
+          {safeAccounts.length ===
+          0 ? (
+            <option
+              value={
+                accountId || ''
+              }
+            >
+              {accountId
+                ? `${
+                    demo
+                      ? 'Demo'
+                      : 'Real'
+                  } — ${accountId}`
+                : 'No account'}
+            </option>
+          ) : (
+            safeAccounts.map(
+              (account) => {
+                const id =
+                  account.id ||
+                  account.loginid ||
+                  '';
 
-      <p className="text-sm font-black font-mono text-emerald-400">
-        {currency}{' '}
-        {balance !== null
-          ? Number(balance).toLocaleString(
-              'en-US',
-              {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
+                return (
+                  <option
+                    key={id}
+                    value={id}
+                  >
+                    {
+                      accountOptionLabel(
+                        account
+                      )
+                    }
+                  </option>
+                );
               }
             )
-          : '0.00'}
-      </p>
+          )}
+        </select>
+
+        <p className="mt-1 text-[9px] text-slate-500">
+          {safeAccounts.length > 1
+            ? `${safeAccounts.length} accounts available`
+            : 'Current OAuth account'}
+        </p>
+      </div>
+
+      <div className="min-w-[180px] border border-slate-700 rounded-xl px-3 py-2 text-right">
+        <div className="flex items-center justify-end gap-2">
+          <span
+            className={`h-2 w-2 rounded-full ${
+              isLoading
+                ? 'bg-amber-400'
+                : isTradingConnected
+                ? 'bg-emerald-400'
+                : 'bg-rose-500'
+            }`}
+          />
+
+          <p
+            className={`text-[9px] uppercase font-black ${
+              demo
+                ? 'text-cyan-400'
+                : 'text-rose-400'
+            }`}
+          >
+            {demo
+              ? 'Demo Account'
+              : 'Real Account'}
+          </p>
+        </div>
+
+        <p className="text-[10px] font-mono text-slate-400 mt-1">
+          {accountId ||
+            'No account'}
+        </p>
+
+        <p className="text-sm font-black font-mono text-emerald-400">
+          {currency || 'USD'}{' '}
+          {balance !== null &&
+          balance !== undefined
+            ? Number(
+                balance
+              ).toLocaleString(
+                'en-US',
+                {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                }
+              )
+            : '—'}
+        </p>
+
+        <p
+          className={`mt-1 text-[9px] font-bold ${
+            isLoading
+              ? 'text-amber-400'
+              : isTradingConnected
+              ? 'text-emerald-500'
+              : 'text-rose-400'
+          }`}
+        >
+          {isLoading
+            ? 'ACCOUNT LOADING...'
+            : isTradingConnected
+            ? 'TRADING SOCKET CONNECTED'
+            : 'TRADING SOCKET DISCONNECTED'}
+        </p>
+      </div>
+
+      <button
+        type="button"
+        onClick={onLogout}
+        disabled={
+          isLoading ||
+          isLoggingOut
+        }
+        className="px-4 py-3 rounded-xl border border-rose-800 bg-rose-950/30 text-rose-300 text-xs font-black disabled:opacity-40"
+      >
+        {isLoggingOut
+          ? 'LOGGING OUT...'
+          : 'LOGOUT'}
+      </button>
     </div>
   );
 }
