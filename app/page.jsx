@@ -83,7 +83,18 @@ import {
   getProposalFreshnessStatus,
 } from '../lib/proposalFreshness';
 
-const CLIENT_ID = '34hh45FQkPfMgbgj20uoR';
+import {
+  createRecoveryBackoff,
+  canAttemptRecovery,
+  getNextRecoveryDelay,
+  recordRecoveryFailure,
+  resetRecoveryBackoff,
+  allowManualRecoveryRetry,
+  getRecoveryBackoffStatus,
+} from '../lib/recoveryBackoff';
+
+const CLIENT_ID =
+  '34hh45FQkPfMgbgj20uoR';
 
 const REDIRECT_URI =
   'https://binaryspot-pro-v2.vercel.app/auth/deriv/callback';
@@ -94,31 +105,49 @@ const PUBLIC_WS_URL =
 const INPUT_CLASS =
   'w-full mt-2 bg-[#151d2d] border border-slate-700 p-3 rounded-xl text-sm text-slate-100 font-mono disabled:opacity-50';
 
-const RECOVERY_RETRY_MS = 2500;
-
 export default function BinarySpotPro() {
   // ============================================================
   // AUTH
   // ============================================================
 
-  const [isLoading, setIsLoading] = useState(true);
-  const [isConnecting, setIsConnecting] = useState(false);
+  const [isLoading, setIsLoading] =
+    useState(true);
 
-  const [isAuthorized, setIsAuthorized] = useState(false);
-  const [isTradingConnected, setIsTradingConnected] =
+  const [isConnecting, setIsConnecting] =
     useState(false);
 
-  const [accounts, setAccounts] = useState([]);
-  const [selectedAccountId, setSelectedAccountId] =
+  const [
+    isAuthorized,
+    setIsAuthorized,
+  ] = useState(false);
+
+  const [
+    isTradingConnected,
+    setIsTradingConnected,
+  ] = useState(false);
+
+  const [accounts, setAccounts] =
+    useState([]);
+
+  const [
+    selectedAccountId,
+    setSelectedAccountId,
+  ] = useState('');
+
+  const [accountId, setAccountId] =
     useState('');
 
-  const [accountId, setAccountId] = useState('');
-  const [accountType, setAccountType] = useState('');
+  const [accountType, setAccountType] =
+    useState('');
 
-  const [balance, setBalance] = useState(null);
-  const [currency, setCurrency] = useState('USD');
+  const [balance, setBalance] =
+    useState(null);
 
-  const [authError, setAuthError] = useState('');
+  const [currency, setCurrency] =
+    useState('USD');
+
+  const [authError, setAuthError] =
+    useState('');
 
   // ============================================================
   // NAV
@@ -131,27 +160,43 @@ export default function BinarySpotPro() {
   // MARKET
   // ============================================================
 
-  const [isMarketConnected, setIsMarketConnected] =
-    useState(false);
+  const [
+    isMarketConnected,
+    setIsMarketConnected,
+  ] = useState(false);
 
-  const [symbol, setSymbol] = useState('R_100');
+  const [symbol, setSymbol] =
+    useState('R_100');
 
-  const [lastTick, setLastTick] = useState(null);
-  const [prevTick, setPrevTick] = useState(null);
+  const [lastTick, setLastTick] =
+    useState(null);
 
-  const [formattedTick, setFormattedTick] =
-    useState('Waiting...');
+  const [prevTick, setPrevTick] =
+    useState(null);
 
-  const [lastDigit, setLastDigit] = useState(null);
+  const [
+    formattedTick,
+    setFormattedTick,
+  ] = useState('Waiting...');
 
-  const [pipSize, setPipSize] = useState(null);
+  const [lastDigit, setLastDigit] =
+    useState(null);
 
-  const [pipSource, setPipSource] = useState('none');
+  const [pipSize, setPipSize] =
+    useState(null);
 
-  const [usedPipSize, setUsedPipSize] =
-    useState(false);
+  const [pipSource, setPipSource] =
+    useState('none');
 
-  const [digitHistory, setDigitHistory] = useState([]);
+  const [
+    usedPipSize,
+    setUsedPipSize,
+  ] = useState(false);
+
+  const [
+    digitHistory,
+    setDigitHistory,
+  ] = useState([]);
 
   // ============================================================
   // STRATEGY
@@ -160,16 +205,21 @@ export default function BinarySpotPro() {
   const [strategy, setStrategy] =
     useState('DIGITDIFF');
 
-  const [predictionDigit, setPredictionDigit] =
-    useState('0');
+  const [
+    predictionDigit,
+    setPredictionDigit,
+  ] = useState('0');
 
-  const [minimumConfidence, setMinimumConfidence] =
-    useState('60');
+  const [
+    minimumConfidence,
+    setMinimumConfidence,
+  ] = useState('60');
 
   const [signal, setSignal] = useState({
     shouldTrade: false,
     confidence: 0,
-    reason: 'Waiting for market data.',
+    reason:
+      'Waiting for market data.',
     sampleSize: 0,
   });
 
@@ -177,12 +227,16 @@ export default function BinarySpotPro() {
   // BOT SETTINGS
   // ============================================================
 
-  const [baseStake, setBaseStake] = useState('1.00');
-
-  const [currentStake, setCurrentStake] =
+  const [baseStake, setBaseStake] =
     useState('1.00');
 
-  const [duration, setDuration] = useState('1');
+  const [
+    currentStake,
+    setCurrentStake,
+  ] = useState('1.00');
+
+  const [duration, setDuration] =
+    useState('1');
 
   const [martingale, setMartingale] =
     useState('2.00');
@@ -204,180 +258,304 @@ export default function BinarySpotPro() {
   const [maxTrades, setMaxTrades] =
     useState('10');
 
-  const [cooldownSeconds, setCooldownSeconds] =
-    useState('2');
+  const [
+    cooldownSeconds,
+    setCooldownSeconds,
+  ] = useState('2');
 
   // ============================================================
   // BOT SESSION
   // ============================================================
 
-  const [isAutoBotRunning, setIsAutoBotRunning] =
-    useState(false);
+  const [
+    isAutoBotRunning,
+    setIsAutoBotRunning,
+  ] = useState(false);
 
-  const [autoBotStatus, setAutoBotStatus] =
-    useState('Standby');
+  const [
+    autoBotStatus,
+    setAutoBotStatus,
+  ] = useState('Standby');
 
-  const [emergencyStopped, setEmergencyStopped] =
-    useState(false);
+  const [
+    emergencyStopped,
+    setEmergencyStopped,
+  ] = useState(false);
 
-  const [totalProfit, setTotalProfit] = useState(0);
-  const [tradeCount, setTradeCount] = useState(0);
+  const [
+    totalProfit,
+    setTotalProfit,
+  ] = useState(0);
 
-  const [winCount, setWinCount] = useState(0);
-  const [lossCount, setLossCount] = useState(0);
-  const [drawCount, setDrawCount] = useState(0);
+  const [tradeCount, setTradeCount] =
+    useState(0);
+
+  const [winCount, setWinCount] =
+    useState(0);
+
+  const [lossCount, setLossCount] =
+    useState(0);
+
+  const [drawCount, setDrawCount] =
+    useState(0);
 
   const [
     consecutiveLosses,
     setConsecutiveLosses,
   ] = useState(0);
 
-  const [botLogs, setBotLogs] = useState([]);
-
-  const [tradeHistory, setTradeHistory] =
+  const [botLogs, setBotLogs] =
     useState([]);
+
+  const [
+    tradeHistory,
+    setTradeHistory,
+  ] = useState([]);
 
   // ============================================================
   // PROPOSAL / CONTRACT
   // ============================================================
 
-  const [proposalLoading, setProposalLoading] =
-    useState(false);
+  const [
+    proposalLoading,
+    setProposalLoading,
+  ] = useState(false);
 
-  const [proposalError, setProposalError] =
-    useState('');
+  const [
+    proposalError,
+    setProposalError,
+  ] = useState('');
 
-  const [proposalData, setProposalData] =
-    useState(null);
+  const [
+    proposalData,
+    setProposalData,
+  ] = useState(null);
 
-  const [proposalClock, setProposalClock] =
-    useState(0);
+  const [
+    proposalClock,
+    setProposalClock,
+  ] = useState(0);
 
-  const [buyLoading, setBuyLoading] =
-    useState(false);
+  const [
+    buyLoading,
+    setBuyLoading,
+  ] = useState(false);
 
-  const [buyError, setBuyError] =
-    useState('');
+  const [
+    buyError,
+    setBuyError,
+  ] = useState('');
 
-  const [activeContract, setActiveContract] =
-    useState(null);
+  const [
+    activeContract,
+    setActiveContract,
+  ] = useState(null);
 
-  const [contractStatus, setContractStatus] =
-    useState('No active contract');
+  const [
+    contractStatus,
+    setContractStatus,
+  ] = useState(
+    'No active contract'
+  );
 
-  const [contractProfit, setContractProfit] =
-    useState(null);
+  const [
+    contractProfit,
+    setContractProfit,
+  ] = useState(null);
 
-  const [lifecycleLabel, setLifecycleLabel] =
-    useState('No active lifecycle');
+  const [
+    lifecycleLabel,
+    setLifecycleLabel,
+  ] = useState(
+    'No active lifecycle'
+  );
 
-  const [requestStatusLabel, setRequestStatusLabel] =
-    useState('No in-flight request');
+  const [
+    requestStatusLabel,
+    setRequestStatusLabel,
+  ] = useState(
+    'No in-flight request'
+  );
 
-  const [recoveryLabel, setRecoveryLabel] =
-    useState('No recovery needed');
+  const [
+    recoveryLabel,
+    setRecoveryLabel,
+  ] = useState(
+    'No recovery needed'
+  );
+
+  const [
+    recoveryBackoffUi,
+    setRecoveryBackoffUi,
+  ] = useState(
+    getRecoveryBackoffStatus(
+      createRecoveryBackoff()
+    )
+  );
 
   // ============================================================
   // SOCKET REFS
   // ============================================================
 
-  const publicWsRef = useRef(null);
-  const tradingWsRef = useRef(null);
+  const publicWsRef =
+    useRef(null);
 
-  const connectTradingSocketRef = useRef(null);
+  const tradingWsRef =
+    useRef(null);
 
-  const publicSubscriptionRef = useRef(null);
-  const contractSubscriptionRef = useRef(null);
+  const connectTradingSocketRef =
+    useRef(null);
 
-  const publicPingRef = useRef(null);
-  const tradingPingRef = useRef(null);
+  const publicSubscriptionRef =
+    useRef(null);
+
+  const contractSubscriptionRef =
+    useRef(null);
+
+  const publicPingRef =
+    useRef(null);
+
+  const tradingPingRef =
+    useRef(null);
 
   // ============================================================
   // PRECISION CACHE
   // ============================================================
 
-  const pipSizeCacheRef = useRef(
-    createPipSizeCache()
-  );
+  const pipSizeCacheRef =
+    useRef(
+      createPipSizeCache()
+    );
 
   // ============================================================
   // PROPOSAL FRESHNESS
   // ============================================================
 
-  const proposalFreshnessRef = useRef(
-    createProposalFreshness()
-  );
+  const proposalFreshnessRef =
+    useRef(
+      createProposalFreshness()
+    );
 
   // ============================================================
-  // RECOVERY REFS
+  // RECOVERY
   // ============================================================
 
-  const recoveryRef = useRef(
-    createContractRecovery()
-  );
+  const recoveryRef =
+    useRef(
+      createContractRecovery()
+    );
 
-  const recoveryTimerRef = useRef(null);
+  const recoveryBackoffRef =
+    useRef(
+      createRecoveryBackoff()
+    );
 
-  const recoveryRunnerRef = useRef(null);
+  const recoveryTimerRef =
+    useRef(null);
 
-  const recoveryFetchRunningRef = useRef(false);
+  const recoveryRunnerRef =
+    useRef(null);
+
+  const recoveryFetchRunningRef =
+    useRef(false);
 
   // ============================================================
   // BOT REFS
   // ============================================================
 
-  const requestIdRef = useRef(1000);
+  const requestIdRef =
+    useRef(1000);
 
-  const autoBotRunningRef = useRef(false);
-  const emergencyStoppedRef = useRef(false);
+  const autoBotRunningRef =
+    useRef(false);
 
-  const proposalPendingRef = useRef(false);
-  const buyPendingRef = useRef(false);
-  const contractOpenRef = useRef(false);
+  const emergencyStoppedRef =
+    useRef(false);
 
-  const cooldownUntilRef = useRef(0);
+  const proposalPendingRef =
+    useRef(false);
 
-  const digitHistoryRef = useRef([]);
+  const buyPendingRef =
+    useRef(false);
 
-  const symbolRef = useRef('R_100');
+  const contractOpenRef =
+    useRef(false);
 
-  const accountIdRef = useRef('');
-  const accountTypeRef = useRef('');
-  const currencyRef = useRef('USD');
+  const cooldownUntilRef =
+    useRef(0);
 
-  const strategyRef = useRef('DIGITDIFF');
-  const predictionDigitRef = useRef('0');
+  const digitHistoryRef =
+    useRef([]);
 
-  const minimumConfidenceRef = useRef(60);
+  const symbolRef =
+    useRef('R_100');
 
-  const baseStakeRef = useRef(1);
-  const currentStakeRef = useRef(1);
+  const accountIdRef =
+    useRef('');
 
-  const durationRef = useRef(1);
+  const accountTypeRef =
+    useRef('');
 
-  const martingaleRef = useRef(2);
+  const currencyRef =
+    useRef('USD');
 
-  const takeProfitRef = useRef(10);
-  const stopLossRef = useRef(20);
+  const strategyRef =
+    useRef('DIGITDIFF');
 
-  const maxLossesRef = useRef(3);
-  const maxStakeRef = useRef(10);
-  const maxTradesRef = useRef(10);
+  const predictionDigitRef =
+    useRef('0');
 
-  const cooldownSecondsRef = useRef(2);
+  const minimumConfidenceRef =
+    useRef(60);
 
-  const totalProfitRef = useRef(0);
-  const tradeCountRef = useRef(0);
+  const baseStakeRef =
+    useRef(1);
 
-  const consecutiveLossesRef = useRef(0);
+  const currentStakeRef =
+    useRef(1);
 
-  const lifecycleRef = useRef(
-    createTradeLifecycle()
-  );
+  const durationRef =
+    useRef(1);
 
-  const requestGuardRef = useRef(
-    createRequestGuard()
-  );
+  const martingaleRef =
+    useRef(2);
+
+  const takeProfitRef =
+    useRef(10);
+
+  const stopLossRef =
+    useRef(20);
+
+  const maxLossesRef =
+    useRef(3);
+
+  const maxStakeRef =
+    useRef(10);
+
+  const maxTradesRef =
+    useRef(10);
+
+  const cooldownSecondsRef =
+    useRef(2);
+
+  const totalProfitRef =
+    useRef(0);
+
+  const tradeCountRef =
+    useRef(0);
+
+  const consecutiveLossesRef =
+    useRef(0);
+
+  const lifecycleRef =
+    useRef(
+      createTradeLifecycle()
+    );
+
+  const requestGuardRef =
+    useRef(
+      createRequestGuard()
+    );
 
   // ============================================================
   // UPDATE REFS
@@ -425,7 +603,9 @@ export default function BinarySpotPro() {
 
   useEffect(() => {
     minimumConfidenceRef.current =
-      Number(minimumConfidence) || 0;
+      Number(
+        minimumConfidence
+      ) || 0;
   }, [minimumConfidence]);
 
   useEffect(() => {
@@ -460,7 +640,9 @@ export default function BinarySpotPro() {
 
   useEffect(() => {
     maxLossesRef.current =
-      Number(maxConsecutiveLosses) || 1;
+      Number(
+        maxConsecutiveLosses
+      ) || 1;
   }, [maxConsecutiveLosses]);
 
   useEffect(() => {
@@ -475,11 +657,13 @@ export default function BinarySpotPro() {
 
   useEffect(() => {
     cooldownSecondsRef.current =
-      Number(cooldownSeconds) || 0;
+      Number(
+        cooldownSeconds
+      ) || 0;
   }, [cooldownSeconds]);
 
   // ============================================================
-  // MANUAL PROPOSAL CLOCK
+  // PROPOSAL CLOCK
   // ============================================================
 
   useEffect(() => {
@@ -513,140 +697,367 @@ export default function BinarySpotPro() {
     return requestIdRef.current;
   };
 
-  const clearManualProposal = useCallback(() => {
-    proposalFreshnessRef.current =
-      clearProposalFreshness();
+  const addBotLog =
+    useCallback(
+      (
+        message,
+        type = 'info'
+      ) => {
+        const time =
+          new Date()
+            .toLocaleTimeString();
 
-    setProposalData(null);
+        setBotLogs(
+          (previous) => [
+            {
+              time,
+              message,
+              type,
+            },
 
-    setProposalClock(
-      Date.now()
+            ...previous.slice(
+              0,
+              149
+            ),
+          ]
+        );
+      },
+      []
     );
-  }, []);
 
-  const syncLifecycleLabel = useCallback(() => {
-    setLifecycleLabel(
-      describeLifecycle(
-        lifecycleRef.current
-      )
-    );
-  }, []);
+  const clearManualProposal =
+    useCallback(() => {
+      proposalFreshnessRef.current =
+        clearProposalFreshness();
 
-  const syncRecoveryLabel = useCallback(() => {
-    setRecoveryLabel(
-      describeContractRecovery(
-        recoveryRef.current
-      )
-    );
-  }, []);
+      setProposalData(null);
 
-  const syncRequestStatus = useCallback(() => {
-    const status =
-      getRequestGuardStatus(
-        requestGuardRef.current
+      setProposalClock(
+        Date.now()
       );
+    }, []);
 
-    proposalPendingRef.current =
-      status.proposalPending;
+  const syncLifecycleLabel =
+    useCallback(() => {
+      setLifecycleLabel(
+        describeLifecycle(
+          lifecycleRef.current
+        )
+      );
+    }, []);
 
-    buyPendingRef.current =
-      status.buyPending;
+  const syncRecoveryLabel =
+    useCallback(() => {
+      setRecoveryLabel(
+        describeContractRecovery(
+          recoveryRef.current
+        )
+      );
+    }, []);
 
-    if (status.buyPending) {
+  const syncRecoveryBackoff =
+    useCallback(() => {
+      setRecoveryBackoffUi(
+        getRecoveryBackoffStatus(
+          recoveryBackoffRef.current
+        )
+      );
+    }, []);
+
+  const syncRequestStatus =
+    useCallback(() => {
+      const status =
+        getRequestGuardStatus(
+          requestGuardRef.current
+        );
+
+      proposalPendingRef.current =
+        status.proposalPending;
+
+      buyPendingRef.current =
+        status.buyPending;
+
+      if (
+        status.buyPending
+      ) {
+        setRequestStatusLabel(
+          `BUY #${status.buyReqId} — ${String(
+            status.buyOwner ||
+              ''
+          ).toUpperCase()}`
+        );
+
+        return;
+      }
+
+      if (
+        status.proposalPending
+      ) {
+        setRequestStatusLabel(
+          `PROPOSAL #${status.proposalReqId} — ${String(
+            status.proposalOwner ||
+              ''
+          ).toUpperCase()}`
+        );
+
+        return;
+      }
+
       setRequestStatusLabel(
-        `BUY #${status.buyReqId} — ${String(
-          status.buyOwner || ''
-        ).toUpperCase()}`
+        `Generation ${status.generation} — Clear`
       );
-
-      return;
-    }
-
-    if (status.proposalPending) {
-      setRequestStatusLabel(
-        `PROPOSAL #${status.proposalReqId} — ${String(
-          status.proposalOwner || ''
-        ).toUpperCase()}`
-      );
-
-      return;
-    }
-
-    setRequestStatusLabel(
-      `Generation ${status.generation} — Clear`
-    );
-  }, []);
-
-  const addBotLog = useCallback(
-    (message, type = 'info') => {
-      const time =
-        new Date().toLocaleTimeString();
-
-      setBotLogs((previous) => [
-        {
-          time,
-          message,
-          type,
-        },
-        ...previous.slice(0, 149),
-      ]);
-    },
-    []
-  );
+    }, []);
 
   // ============================================================
   // RECOVERY TIMER
   // ============================================================
 
-  const clearRecoveryTimer = useCallback(() => {
-    if (recoveryTimerRef.current) {
-      clearTimeout(
+  const clearRecoveryTimer =
+    useCallback(() => {
+      if (
         recoveryTimerRef.current
-      );
-
-      recoveryTimerRef.current = null;
-    }
-  }, []);
-
-  const queueContractRecovery = useCallback(
-    (delay = RECOVERY_RETRY_MS) => {
-      const status =
-        getContractRecoveryStatus(
-          recoveryRef.current
+      ) {
+        clearTimeout(
+          recoveryTimerRef.current
         );
 
-      if (
-        !status.hasContract ||
-        status.settled
-      ) {
-        return;
+        recoveryTimerRef.current =
+          null;
       }
+    }, []);
 
-      if (recoveryTimerRef.current) {
-        return;
-      }
+  const queueContractRecovery =
+    useCallback(
+      (
+        requestedDelay = null
+      ) => {
+        const recoveryStatus =
+          getContractRecoveryStatus(
+            recoveryRef.current
+          );
 
-      recoveryTimerRef.current =
-        setTimeout(() => {
-          recoveryTimerRef.current =
-            null;
+        if (
+          !recoveryStatus.hasContract ||
+          recoveryStatus.settled
+        ) {
+          return;
+        }
 
-          recoveryRunnerRef.current?.();
-        }, delay);
-    },
-    []
-  );
+        const permission =
+          canAttemptRecovery(
+            recoveryBackoffRef.current
+          );
+
+        if (
+          !permission.allowed
+        ) {
+          clearRecoveryTimer();
+
+          setContractStatus(
+            'RECOVERY PAUSED'
+          );
+
+          syncRecoveryBackoff();
+
+          addBotLog(
+            'Automatic contract recovery paused because the retry limit was reached.',
+            'error'
+          );
+
+          return;
+        }
+
+        if (
+          recoveryTimerRef.current
+        ) {
+          return;
+        }
+
+        const delay =
+          requestedDelay !==
+            null &&
+          Number.isFinite(
+            Number(
+              requestedDelay
+            )
+          ) &&
+          Number(
+            requestedDelay
+          ) >= 0
+            ? Number(
+                requestedDelay
+              )
+            : getNextRecoveryDelay(
+                recoveryBackoffRef.current
+              );
+
+        const seconds =
+          Math.ceil(
+            delay / 1000
+          );
+
+        if (delay > 0) {
+          setContractStatus(
+            `RECOVERY IN ${seconds}s`
+          );
+        }
+
+        recoveryTimerRef.current =
+          setTimeout(() => {
+            recoveryTimerRef.current =
+              null;
+
+            recoveryRunnerRef.current?.();
+          }, delay);
+      },
+      [
+        addBotLog,
+        clearRecoveryTimer,
+        syncRecoveryBackoff,
+      ]
+    );
+
+  // ============================================================
+  // RECORD RECOVERY FAILURE
+  // ============================================================
+
+  const registerRecoveryFailure =
+    useCallback(
+      (reason) => {
+        recoveryBackoffRef.current =
+          recordRecoveryFailure(
+            recoveryBackoffRef.current
+          );
+
+        recoveryRef.current =
+          failContractRecovery(
+            recoveryRef.current
+          );
+
+        syncRecoveryLabel();
+        syncRecoveryBackoff();
+
+        const status =
+          getRecoveryBackoffStatus(
+            recoveryBackoffRef.current
+          );
+
+        if (
+          status.exhausted
+        ) {
+          clearRecoveryTimer();
+
+          setContractStatus(
+            'RECOVERY PAUSED'
+          );
+
+          addBotLog(
+            `${reason} Automatic recovery exhausted after ${status.attempts}/${status.maxAttempts} attempts.`,
+            'error'
+          );
+
+          return;
+        }
+
+        setContractStatus(
+          'RECOVERY REQUIRED'
+        );
+
+        addBotLog(
+          `${reason} Next retry in ${status.nextDelaySeconds}s.`,
+          'error'
+        );
+
+        queueContractRecovery();
+      },
+      [
+        addBotLog,
+        clearRecoveryTimer,
+        queueContractRecovery,
+        syncRecoveryBackoff,
+        syncRecoveryLabel,
+      ]
+    );
 
   // ============================================================
   // STOP BOT
   // ============================================================
 
-  const stopAutoBot = useCallback(
-    (reason = 'Stopped manually') => {
+  const stopAutoBot =
+    useCallback(
+      (
+        reason =
+          'Stopped manually'
+      ) => {
+        autoBotRunningRef.current =
+          false;
+
+        setIsAutoBotRunning(
+          false
+        );
+
+        requestGuardRef.current =
+          invalidateBotGeneration(
+            requestGuardRef.current
+          );
+
+        const status =
+          getRequestGuardStatus(
+            requestGuardRef.current
+          );
+
+        proposalPendingRef.current =
+          status.proposalPending;
+
+        buyPendingRef.current =
+          status.buyPending;
+
+        setProposalLoading(
+          status.proposalPending
+        );
+
+        setBuyLoading(
+          status.buyPending
+        );
+
+        syncRequestStatus();
+
+        setAutoBotStatus(
+          reason
+        );
+
+        addBotLog(
+          status.buyPending
+            ? `Auto bot stopped: ${reason}. In-flight BUY will still be accounted for.`
+            : `Auto bot stopped: ${reason}`,
+          'system'
+        );
+      },
+      [
+        addBotLog,
+        syncRequestStatus,
+      ]
+    );
+
+  // ============================================================
+  // EMERGENCY STOP
+  // ============================================================
+
+  const emergencyStop =
+    useCallback(() => {
+      emergencyStoppedRef.current =
+        true;
+
+      setEmergencyStopped(
+        true
+      );
+
       autoBotRunningRef.current =
         false;
 
-      setIsAutoBotRunning(false);
+      setIsAutoBotRunning(
+        false
+      );
 
       requestGuardRef.current =
         invalidateBotGeneration(
@@ -674,923 +1085,70 @@ export default function BinarySpotPro() {
 
       syncRequestStatus();
 
-      setAutoBotStatus(reason);
+      setAutoBotStatus(
+        'EMERGENCY STOP ACTIVATED'
+      );
 
       addBotLog(
-        status.buyPending
-          ? `Auto bot stopped: ${reason}. In-flight BUY will still be accounted for.`
-          : `Auto bot stopped: ${reason}`,
-        'system'
+        contractOpenRef.current ||
+          status.buyPending
+          ? 'EMERGENCY STOP: New entries blocked. Any already-purchased or in-flight contract will still be accounted for.'
+          : 'EMERGENCY STOP: New entries blocked.',
+        'error'
       );
-    },
-    [
+    }, [
       addBotLog,
       syncRequestStatus,
-    ]
-  );
-
-  // ============================================================
-  // EMERGENCY STOP
-  // ============================================================
-
-  const emergencyStop = useCallback(() => {
-    emergencyStoppedRef.current =
-      true;
-
-    setEmergencyStopped(true);
-
-    autoBotRunningRef.current =
-      false;
-
-    setIsAutoBotRunning(false);
-
-    requestGuardRef.current =
-      invalidateBotGeneration(
-        requestGuardRef.current
-      );
-
-    const status =
-      getRequestGuardStatus(
-        requestGuardRef.current
-      );
-
-    proposalPendingRef.current =
-      status.proposalPending;
-
-    buyPendingRef.current =
-      status.buyPending;
-
-    setProposalLoading(
-      status.proposalPending
-    );
-
-    setBuyLoading(
-      status.buyPending
-    );
-
-    syncRequestStatus();
-
-    setAutoBotStatus(
-      'EMERGENCY STOP ACTIVATED'
-    );
-
-    addBotLog(
-      contractOpenRef.current ||
-        status.buyPending
-        ? 'EMERGENCY STOP: New entries blocked. Any already-purchased or in-flight automated contract will still be accounted for.'
-        : 'EMERGENCY STOP: New entries blocked.',
-      'error'
-    );
-  }, [
-    addBotLog,
-    syncRequestStatus,
-  ]);
-
-  const clearEmergencyStop = () => {
-    const requestStatus =
-      getRequestGuardStatus(
-        requestGuardRef.current
-      );
-
-    if (
-      contractOpenRef.current ||
-      requestStatus.buyPending
-    ) {
-      setBuyError(
-        'Wait for the active or in-flight contract purchase to finish first.'
-      );
-
-      return;
-    }
-
-    emergencyStoppedRef.current =
-      false;
-
-    setEmergencyStopped(false);
-
-    setBuyError('');
-
-    setAutoBotStatus('Standby');
-
-    addBotLog(
-      'Emergency Stop cleared.',
-      'system'
-    );
-  };
-
-  // ============================================================
-  // SOCKET CLEANUP
-  // ============================================================
-
-  const closeTradingSocket = useCallback(() => {
-    clearRecoveryTimer();
-
-    if (tradingPingRef.current) {
-      clearInterval(
-        tradingPingRef.current
-      );
-
-      tradingPingRef.current = null;
-    }
-
-    if (tradingWsRef.current) {
-      try {
-        tradingWsRef.current.onclose =
-          null;
-
-        tradingWsRef.current.onerror =
-          null;
-
-        tradingWsRef.current.close();
-      } catch {}
-
-      tradingWsRef.current = null;
-    }
-
-    contractSubscriptionRef.current =
-      null;
-
-    proposalPendingRef.current =
-      false;
-
-    buyPendingRef.current =
-      false;
-
-    requestGuardRef.current =
-      resetRequestGuard();
-
-    setProposalLoading(false);
-    setBuyLoading(false);
-
-    setRequestStatusLabel(
-      'Socket closed — requests reset'
-    );
-
-    setIsTradingConnected(false);
-  }, [clearRecoveryTimer]);
-
-  // ============================================================
-  // BUILD PROPOSAL
-  // ============================================================
-
-  const buildProposalPayload = useCallback(
-    (
-      stakeAmount,
-      signalPrediction = null
-    ) => {
-      const parsedStake =
-        Number(stakeAmount);
-
-      const parsedDuration =
-        Number(durationRef.current);
-
-      const currentStrategy =
-        strategyRef.current;
-
-      const currentSymbol =
-        symbolRef.current;
-
-      const prediction =
-        signalPrediction !== null &&
-        signalPrediction !== undefined
-          ? Number(signalPrediction)
-          : Number(
-              predictionDigitRef.current
-            );
-
-      if (
-        !Number.isFinite(parsedStake) ||
-        parsedStake <= 0
-      ) {
-        throw new Error(
-          'Stake must be greater than zero.'
-        );
-      }
-
-      if (
-        parsedStake >
-        maxStakeRef.current
-      ) {
-        throw new Error(
-          `Stake ${parsedStake.toFixed(
-            2
-          )} exceeds Maximum Stake ${maxStakeRef.current.toFixed(
-            2
-          )}.`
-        );
-      }
-
-      if (
-        !Number.isInteger(parsedDuration) ||
-        parsedDuration < 1
-      ) {
-        throw new Error(
-          'Duration must be at least 1 tick.'
-        );
-      }
-
-      if (!currentSymbol) {
-        throw new Error(
-          'A trading symbol is required.'
-        );
-      }
-
-      if (
-        [
-          'DIGITDIFF',
-          'DIGITMATCH',
-          'DIGITOVER',
-          'DIGITUNDER',
-        ].includes(currentStrategy)
-      ) {
-        if (
-          !Number.isInteger(prediction) ||
-          prediction < 0 ||
-          prediction > 9
-        ) {
-          throw new Error(
-            'Prediction digit must be between 0 and 9.'
-          );
-        }
-      }
-
-      const payload = {
-        proposal: 1,
-
-        amount: Number(
-          parsedStake.toFixed(2)
-        ),
-
-        basis: 'stake',
-
-        contract_type:
-          currentStrategy,
-
-        currency:
-          currencyRef.current ||
-          'USD',
-
-        duration:
-          parsedDuration,
-
-        duration_unit: 't',
-
-        underlying_symbol:
-          currentSymbol,
-
-        req_id:
-          nextReqId(),
-      };
-
-      if (
-        [
-          'DIGITDIFF',
-          'DIGITMATCH',
-          'DIGITOVER',
-          'DIGITUNDER',
-        ].includes(currentStrategy)
-      ) {
-        payload.barrier =
-          String(prediction);
-      }
-
-      return payload;
-    },
-    []
-  );
-
-  // ============================================================
-  // AUTO PROPOSAL
-  // ============================================================
-
-  const requestAutoProposal = useCallback(
-    (entrySignal) => {
-      const permission =
-        canOpenNewContract({
-          botRunning:
-            autoBotRunningRef.current,
-
-          emergencyStopped:
-            emergencyStoppedRef.current,
-
-          accountType:
-            accountTypeRef.current,
-
-          tradingConnected:
-            tradingWsRef.current?.readyState ===
-            WebSocket.OPEN,
-
-          proposalPending:
-            proposalPendingRef.current,
-
-          buyPending:
-            buyPendingRef.current,
-
-          contractOpen:
-            contractOpenRef.current,
-
-          cooldownUntil:
-            cooldownUntilRef.current,
-
-          tradeCount:
-            tradeCountRef.current,
-
-          maxTrades:
-            maxTradesRef.current,
-        });
-
-      if (!permission.allowed) {
-        if (permission.stopBot) {
-          stopAutoBot(
-            permission.reason
-          );
-        }
-
-        return;
-      }
-
-      const confidence =
-        Number(
-          entrySignal?.confidence
+    ]);
+
+  const clearEmergencyStop =
+    () => {
+      const requestStatus =
+        getRequestGuardStatus(
+          requestGuardRef.current
         );
 
       if (
-        confidence <
-        minimumConfidenceRef.current
+        contractOpenRef.current ||
+        requestStatus.buyPending
       ) {
-        return;
-      }
-
-      const ws =
-        tradingWsRef.current;
-
-      if (
-        !ws ||
-        ws.readyState !==
-          WebSocket.OPEN
-      ) {
-        stopAutoBot(
-          'Trading socket disconnected.'
+        setBuyError(
+          'Wait for the active or in-flight contract purchase to finish first.'
         );
 
         return;
       }
 
-      try {
-        clearManualProposal();
-
-        const stake =
-          currentStakeRef.current;
-
-        const payload =
-          buildProposalPayload(
-            stake,
-            entrySignal?.predictionDigit
-          );
-
-        const registration =
-          beginProposalRequest(
-            requestGuardRef.current,
-            {
-              reqId:
-                payload.req_id,
-
-              owner:
-                REQUEST_OWNER.AUTO,
-            }
-          );
-
-        if (!registration.valid) {
-          throw new Error(
-            registration.reason
-          );
-        }
-
-        requestGuardRef.current =
-          registration.guard;
-
-        syncRequestStatus();
-
-        lifecycleRef.current =
-          beginTradeLifecycle({
-            mode: 'auto',
-          });
-
-        syncLifecycleLabel();
-
-        proposalPendingRef.current =
-          true;
-
-        setProposalLoading(true);
-
-        setProposalError('');
-
-        setAutoBotStatus(
-          `ENTRY SIGNAL — ${confidence.toFixed(
-            1
-          )}% confidence`
-        );
-
-        addBotLog(
-          `ENTRY | ${strategyRef.current} | ${symbolRef.current} | Confidence ${confidence.toFixed(
-            1
-          )}% | Stake ${currencyRef.current} ${stake.toFixed(
-            2
-          )} | Req #${payload.req_id}`,
-          'trade'
-        );
-
-        ws.send(
-          JSON.stringify(payload)
-        );
-      } catch (error) {
-        requestGuardRef.current =
-          invalidateBotGeneration(
-            requestGuardRef.current
-          );
-
-        syncRequestStatus();
-
-        proposalPendingRef.current =
-          false;
-
-        setProposalLoading(false);
-
-        lifecycleRef.current =
-          createTradeLifecycle();
-
-        syncLifecycleLabel();
-
-        stopAutoBot(
-          error.message ||
-            'Proposal setup error'
-        );
-      }
-    },
-    [
-      buildProposalPayload,
-      addBotLog,
-      stopAutoBot,
-      syncLifecycleLabel,
-      syncRequestStatus,
-      clearManualProposal,
-    ]
-  );
-
-  // ============================================================
-  // SIGNAL ENTRY
-  // ============================================================
-
-  const evaluateAutoEntry = useCallback(
-    (history) => {
-      const result =
-        evaluateEntrySignal({
-          strategy:
-            strategyRef.current,
-
-          digitHistory:
-            history,
-
-          predictionDigit:
-            predictionDigitRef.current,
-        });
-
-      setSignal(result);
-
-      if (
-        !autoBotRunningRef.current
-      ) {
-        return;
-      }
-
-      const permission =
-        canOpenNewContract({
-          botRunning:
-            autoBotRunningRef.current,
-
-          emergencyStopped:
-            emergencyStoppedRef.current,
-
-          accountType:
-            accountTypeRef.current,
-
-          tradingConnected:
-            tradingWsRef.current?.readyState ===
-            WebSocket.OPEN,
-
-          proposalPending:
-            proposalPendingRef.current,
-
-          buyPending:
-            buyPendingRef.current,
-
-          contractOpen:
-            contractOpenRef.current,
-
-          cooldownUntil:
-            cooldownUntilRef.current,
-
-          tradeCount:
-            tradeCountRef.current,
-
-          maxTrades:
-            maxTradesRef.current,
-        });
-
-      if (!permission.allowed) {
-        if (permission.stopBot) {
-          stopAutoBot(
-            permission.reason
-          );
-
-          return;
-        }
-
-        if (
-          permission.cooldownRemaining
-        ) {
-          setAutoBotStatus(
-            `Cooldown — ${permission.cooldownRemaining}s`
-          );
-
-          return;
-        }
-
-        return;
-      }
-
-      if (!result.shouldTrade) {
-        setAutoBotStatus(
-          `WAIT — ${result.reason}`
-        );
-
-        return;
-      }
-
-      if (
-        Number(result.confidence) <
-        minimumConfidenceRef.current
-      ) {
-        setAutoBotStatus(
-          `WAIT — Signal ${Number(
-            result.confidence
-          ).toFixed(
-            1
-          )}% below minimum ${minimumConfidenceRef.current}%`
-        );
-
-        return;
-      }
-
-      requestAutoProposal(result);
-    },
-    [
-      requestAutoProposal,
-      stopAutoBot,
-    ]
-  );
-
-  // ============================================================
-  // AUTO SETTLEMENT
-  // ============================================================
-
-  const handleAutoSettlement = useCallback(
-    (contract) => {
-      const contractId =
-        contract.contract_id;
-
-      if (
-        !shouldProcessSettlement(
-          lifecycleRef.current,
-          contractId
-        )
-      ) {
-        return;
-      }
-
-      const result =
-        classifyTradeResult(
-          contract.profit
-        );
-
-      lifecycleRef.current =
-        markLifecycleSettled(
-          lifecycleRef.current,
-          contractId
-        );
-
-      syncLifecycleLabel();
-
-      contractOpenRef.current =
+      emergencyStoppedRef.current =
         false;
 
-      const settlement =
-        evaluateSettlementSafety({
-          profit:
-            result.profit,
-
-          totalProfit:
-            totalProfitRef.current,
-
-          tradeCount:
-            tradeCountRef.current,
-
-          consecutiveLosses:
-            consecutiveLossesRef.current,
-
-          takeProfit:
-            takeProfitRef.current,
-
-          stopLoss:
-            stopLossRef.current,
-
-          maxTrades:
-            maxTradesRef.current,
-
-          maxConsecutiveLosses:
-            maxLossesRef.current,
-        });
-
-      totalProfitRef.current =
-        settlement.nextTotalProfit;
-
-      setTotalProfit(
-        settlement.nextTotalProfit
+      setEmergencyStopped(
+        false
       );
 
-      tradeCountRef.current =
-        settlement.nextTradeCount;
-
-      setTradeCount(
-        settlement.nextTradeCount
-      );
-
-      consecutiveLossesRef.current =
-        settlement.nextConsecutiveLosses;
-
-      setConsecutiveLosses(
-        settlement.nextConsecutiveLosses
-      );
-
-      if (result.won) {
-        setWinCount(
-          (value) => value + 1
-        );
-      } else if (result.lost) {
-        setLossCount(
-          (value) => value + 1
-        );
-      } else {
-        setDrawCount(
-          (value) => value + 1
-        );
-      }
-
-      const tradeStake =
-        Number(
-          contract.buy_price ??
-            currentStakeRef.current
-        );
-
-      setTradeHistory(
-        (previous) => [
-          {
-            id:
-              contract.contract_id,
-
-            result:
-              result.result,
-
-            profit:
-              result.profit,
-
-            stake:
-              tradeStake,
-
-            strategy:
-              contract.contract_type ||
-              strategyRef.current,
-
-            symbol:
-              symbolRef.current,
-
-            time:
-              new Date().toLocaleTimeString(),
-          },
-          ...previous.slice(
-            0,
-            49
-          ),
-        ]
-      );
-
-      if (result.won) {
-        addBotLog(
-          `WIN +${result.profit.toFixed(
-            2
-          )} ${
-            contract.currency ||
-            currencyRef.current
-          } | Net ${
-            settlement.nextTotalProfit >=
-            0
-              ? '+'
-              : ''
-          }${settlement.nextTotalProfit.toFixed(
-            2
-          )}`,
-          'success'
-        );
-      } else if (result.lost) {
-        addBotLog(
-          `LOSS ${result.profit.toFixed(
-            2
-          )} ${
-            contract.currency ||
-            currencyRef.current
-          } | Net ${settlement.nextTotalProfit.toFixed(
-            2
-          )}`,
-          'error'
-        );
-      } else {
-        addBotLog(
-          `DRAW 0.00 ${
-            contract.currency ||
-            currencyRef.current
-          } | Stake unchanged`,
-          'system'
-        );
-      }
-
-      if (settlement.stopBot) {
-        stopAutoBot(
-          settlement.stopReason
-        );
-
-        return;
-      }
-
-      if (result.won) {
-        const stakeResult =
-          calculateNextStake({
-            won: true,
-
-            baseStake:
-              baseStakeRef.current,
-
-            currentStake:
-              currentStakeRef.current,
-
-            martingale:
-              martingaleRef.current,
-
-            maxStake:
-              maxStakeRef.current,
-          });
-
-        currentStakeRef.current =
-          stakeResult.stake;
-
-        setCurrentStake(
-          stakeResult.stake.toFixed(
-            2
-          )
-        );
-      } else if (result.lost) {
-        const stakeResult =
-          calculateNextStake({
-            won: false,
-
-            baseStake:
-              baseStakeRef.current,
-
-            currentStake:
-              currentStakeRef.current,
-
-            martingale:
-              martingaleRef.current,
-
-            maxStake:
-              maxStakeRef.current,
-          });
-
-        if (!stakeResult.allowed) {
-          addBotLog(
-            stakeResult.reason,
-            'error'
-          );
-
-          stopAutoBot(
-            stakeResult.reason
-          );
-
-          return;
-        }
-
-        currentStakeRef.current =
-          stakeResult.stake;
-
-        setCurrentStake(
-          stakeResult.stake.toFixed(
-            2
-          )
-        );
-
-        addBotLog(
-          `Next stake ${stakeResult.stake.toFixed(
-            2
-          )}`,
-          'system'
-        );
-      } else {
-        setCurrentStake(
-          currentStakeRef.current.toFixed(
-            2
-          )
-        );
-      }
-
-      const postSettlement =
-        getPostSettlementAction({
-          lifecycle:
-            lifecycleRef.current,
-
-          botRunning:
-            autoBotRunningRef.current,
-
-          emergencyStopped:
-            emergencyStoppedRef.current,
-
-          safetyStopTriggered:
-            false,
-        });
-
-      if (
-        !postSettlement.continueBot
-      ) {
-        setAutoBotStatus(
-          postSettlement.reason
-        );
-
-        addBotLog(
-          `Trade recorded. ${postSettlement.reason}`,
-          'system'
-        );
-
-        return;
-      }
-
-      cooldownUntilRef.current =
-        createCooldown(
-          cooldownSecondsRef.current
-        );
-
-      const sessionStatus =
-        buildSessionStatus({
-          running: true,
-
-          emergencyStopped: false,
-
-          contractOpen: false,
-
-          proposalPending: false,
-
-          buyPending: false,
-
-          cooldownUntil:
-            cooldownUntilRef.current,
-        });
+      setBuyError('');
 
       setAutoBotStatus(
-        sessionStatus.label
+        'Standby'
       );
 
       addBotLog(
-        'Contract settled. Waiting for the next valid strategy signal.',
+        'Emergency Stop cleared.',
         'system'
       );
-    },
-    [
-      addBotLog,
-      stopAutoBot,
-      syncLifecycleLabel,
-    ]
-  );
+    };
 
   // ============================================================
-  // TRADING SOCKET
+  // CLOSE TRADING SOCKET
   // ============================================================
 
-  const connectTradingSocket = useCallback(
-    (wsUrl) => {
-      if (!wsUrl) {
-        setIsTradingConnected(false);
+  const closeTradingSocket =
+    useCallback(() => {
+      clearRecoveryTimer();
 
-        return;
-      }
-
-      if (tradingPingRef.current) {
+      if (
+        tradingPingRef.current
+      ) {
         clearInterval(
           tradingPingRef.current
         );
@@ -1599,7 +1157,9 @@ export default function BinarySpotPro() {
           null;
       }
 
-      if (tradingWsRef.current) {
+      if (
+        tradingWsRef.current
+      ) {
         try {
           tradingWsRef.current.onclose =
             null;
@@ -1609,889 +1169,874 @@ export default function BinarySpotPro() {
 
           tradingWsRef.current.close();
         } catch {}
+
+        tradingWsRef.current =
+          null;
       }
 
       contractSubscriptionRef.current =
         null;
 
-      const ws =
-        new WebSocket(wsUrl);
+      proposalPendingRef.current =
+        false;
 
-      tradingWsRef.current = ws;
+      buyPendingRef.current =
+        false;
 
-      ws.onopen = () => {
-        recoveryFetchRunningRef.current =
-          false;
+      requestGuardRef.current =
+        resetRequestGuard();
 
-        setIsTradingConnected(true);
+      setProposalLoading(false);
+      setBuyLoading(false);
 
-        addBotLog(
-          'Authenticated Deriv trading socket connected.',
-          'system'
-        );
+      setRequestStatusLabel(
+        'Socket closed — requests reset'
+      );
 
-        ws.send(
-          JSON.stringify({
-            balance: 1,
-            subscribe: 1,
-            req_id:
-              nextReqId(),
-          })
-        );
+      setIsTradingConnected(
+        false
+      );
+    }, [clearRecoveryTimer]);
 
-        const recoveryStatus =
-          getContractRecoveryStatus(
-            recoveryRef.current
+  // ============================================================
+  // BUILD PROPOSAL
+  // ============================================================
+
+  const buildProposalPayload =
+    useCallback(
+      (
+        stakeAmount,
+        signalPrediction = null
+      ) => {
+        const parsedStake =
+          Number(
+            stakeAmount
           );
 
+        const parsedDuration =
+          Number(
+            durationRef.current
+          );
+
+        const currentStrategy =
+          strategyRef.current;
+
+        const currentSymbol =
+          symbolRef.current;
+
+        const prediction =
+          signalPrediction !==
+            null &&
+          signalPrediction !==
+            undefined
+            ? Number(
+                signalPrediction
+              )
+            : Number(
+                predictionDigitRef.current
+              );
+
         if (
-          recoveryStatus.hasContract &&
-          recoveryStatus.needsRecovery
+          !Number.isFinite(
+            parsedStake
+          ) ||
+          parsedStake <= 0
         ) {
-          const permission =
-            canRecoverContract(
-              recoveryRef.current,
-              {
-                accountId:
-                  accountIdRef.current,
+          throw new Error(
+            'Stake must be greater than zero.'
+          );
+        }
 
-                tradingConnected:
-                  true,
-              }
-            );
+        if (
+          parsedStake >
+          maxStakeRef.current
+        ) {
+          throw new Error(
+            `Stake ${parsedStake.toFixed(
+              2
+            )} exceeds Maximum Stake ${maxStakeRef.current.toFixed(
+              2
+            )}.`
+          );
+        }
 
-          if (permission.allowed) {
-            recoveryRef.current =
-              beginContractRecovery(
-                recoveryRef.current
-              );
+        if (
+          !Number.isInteger(
+            parsedDuration
+          ) ||
+          parsedDuration < 1
+        ) {
+          throw new Error(
+            'Duration must be at least 1 tick.'
+          );
+        }
 
-            syncRecoveryLabel();
+        if (!currentSymbol) {
+          throw new Error(
+            'A trading symbol is required.'
+          );
+        }
 
-            const recoveryRequest =
-              buildContractRecoveryRequest(
-                recoveryRef.current,
-                nextReqId()
-              );
-
-            if (
-              recoveryRequest.valid
-            ) {
-              setContractStatus(
-                'RECOVERING'
-              );
-
-              addBotLog(
-                `Recovering contract #${recoveryStatus.contractId} on fresh authenticated socket.`,
-                'system'
-              );
-
-              ws.send(
-                JSON.stringify(
-                  recoveryRequest.payload
-                )
-              );
-            } else {
-              recoveryRef.current =
-                failContractRecovery(
-                  recoveryRef.current
-                );
-
-              syncRecoveryLabel();
-
-              addBotLog(
-                recoveryRequest.reason,
-                'error'
-              );
-
-              queueContractRecovery();
-            }
-          } else {
-            addBotLog(
-              `Contract recovery blocked: ${permission.reason}`,
-              'error'
+        if (
+          [
+            'DIGITDIFF',
+            'DIGITMATCH',
+            'DIGITOVER',
+            'DIGITUNDER',
+          ].includes(
+            currentStrategy
+          )
+        ) {
+          if (
+            !Number.isInteger(
+              prediction
+            ) ||
+            prediction < 0 ||
+            prediction > 9
+          ) {
+            throw new Error(
+              'Prediction digit must be between 0 and 9.'
             );
           }
         }
 
-        tradingPingRef.current =
-          setInterval(() => {
-            if (
-              ws.readyState ===
-              WebSocket.OPEN
-            ) {
-              ws.send(
-                JSON.stringify({
-                  ping: 1,
-                })
-              );
-            }
-          }, 30000);
-      };
+        const payload = {
+          proposal: 1,
 
-      ws.onmessage = (
-        event
-      ) => {
+          amount:
+            Number(
+              parsedStake.toFixed(
+                2
+              )
+            ),
+
+          basis: 'stake',
+
+          contract_type:
+            currentStrategy,
+
+          currency:
+            currencyRef.current ||
+            'USD',
+
+          duration:
+            parsedDuration,
+
+          duration_unit:
+            't',
+
+          underlying_symbol:
+            currentSymbol,
+
+          req_id:
+            nextReqId(),
+        };
+
+        if (
+          [
+            'DIGITDIFF',
+            'DIGITMATCH',
+            'DIGITOVER',
+            'DIGITUNDER',
+          ].includes(
+            currentStrategy
+          )
+        ) {
+          payload.barrier =
+            String(
+              prediction
+            );
+        }
+
+        return payload;
+      },
+      []
+    );
+
+  // ============================================================
+  // AUTO PROPOSAL
+  // ============================================================
+
+  const requestAutoProposal =
+    useCallback(
+      (entrySignal) => {
+        const permission =
+          canOpenNewContract({
+            botRunning:
+              autoBotRunningRef.current,
+
+            emergencyStopped:
+              emergencyStoppedRef.current,
+
+            accountType:
+              accountTypeRef.current,
+
+            tradingConnected:
+              tradingWsRef.current
+                ?.readyState ===
+              WebSocket.OPEN,
+
+            proposalPending:
+              proposalPendingRef.current,
+
+            buyPending:
+              buyPendingRef.current,
+
+            contractOpen:
+              contractOpenRef.current,
+
+            cooldownUntil:
+              cooldownUntilRef.current,
+
+            tradeCount:
+              tradeCountRef.current,
+
+            maxTrades:
+              maxTradesRef.current,
+          });
+
+        if (
+          !permission.allowed
+        ) {
+          if (
+            permission.stopBot
+          ) {
+            stopAutoBot(
+              permission.reason
+            );
+          }
+
+          return;
+        }
+
+        const confidence =
+          Number(
+            entrySignal
+              ?.confidence
+          );
+
+        if (
+          confidence <
+          minimumConfidenceRef.current
+        ) {
+          return;
+        }
+
+        const ws =
+          tradingWsRef.current;
+
+        if (
+          !ws ||
+          ws.readyState !==
+            WebSocket.OPEN
+        ) {
+          stopAutoBot(
+            'Trading socket disconnected.'
+          );
+
+          return;
+        }
+
         try {
-          const data =
-            JSON.parse(
-              event.data
+          clearManualProposal();
+
+          const stake =
+            currentStakeRef.current;
+
+          const payload =
+            buildProposalPayload(
+              stake,
+              entrySignal
+                ?.predictionDigit
             );
 
-          if (data.error) {
-            const message =
-              data.error.message ||
-              'Deriv rejected the request.';
+          const registration =
+            beginProposalRequest(
+              requestGuardRef.current,
+              {
+                reqId:
+                  payload.req_id,
 
-            if (
-              data.echo_req?.proposal ===
-              1
-            ) {
-              const resolved =
-                resolveProposalRequest(
-                  requestGuardRef.current,
-                  data
-                );
-
-              if (
-                resolved.match.matched
-              ) {
-                requestGuardRef.current =
-                  resolved.guard;
-
-                proposalPendingRef.current =
-                  false;
-
-                setProposalLoading(false);
-
-                setProposalError(
-                  message
-                );
-
-                if (
-                  !isAutoOwner(
-                    resolved.match.owner
-                  )
-                ) {
-                  clearManualProposal();
-                }
-
-                syncRequestStatus();
+                owner:
+                  REQUEST_OWNER.AUTO,
               }
-            }
-
-            if (
-              data.echo_req?.buy
-            ) {
-              const resolved =
-                resolveBuyRequest(
-                  requestGuardRef.current,
-                  data
-                );
-
-              if (
-                resolved.match.matched
-              ) {
-                requestGuardRef.current =
-                  resolved.guard;
-
-                buyPendingRef.current =
-                  false;
-
-                setBuyLoading(false);
-
-                setBuyError(
-                  message
-                );
-
-                syncRequestStatus();
-              }
-            }
-
-            if (
-              data.echo_req
-                ?.proposal_open_contract ===
-              1
-            ) {
-              const recoveryStatus =
-                getContractRecoveryStatus(
-                  recoveryRef.current
-                );
-
-              if (
-                recoveryStatus.recovering
-              ) {
-                recoveryRef.current =
-                  failContractRecovery(
-                    recoveryRef.current
-                  );
-
-                syncRecoveryLabel();
-
-                setContractStatus(
-                  'RECOVERY REQUIRED'
-                );
-
-                addBotLog(
-                  `Contract recovery request failed: ${message}`,
-                  'error'
-                );
-
-                queueContractRecovery();
-              }
-            }
-
-            addBotLog(
-              message,
-              'error'
             );
 
-            if (
-              autoBotRunningRef.current
-            ) {
-              stopAutoBot(
-                message
-              );
-            }
+          if (
+            !registration.valid
+          ) {
+            throw new Error(
+              registration.reason
+            );
+          }
+
+          requestGuardRef.current =
+            registration.guard;
+
+          syncRequestStatus();
+
+          lifecycleRef.current =
+            beginTradeLifecycle({
+              mode: 'auto',
+            });
+
+          syncLifecycleLabel();
+
+          proposalPendingRef.current =
+            true;
+
+          setProposalLoading(
+            true
+          );
+
+          setProposalError('');
+
+          setAutoBotStatus(
+            `ENTRY SIGNAL — ${confidence.toFixed(
+              1
+            )}% confidence`
+          );
+
+          addBotLog(
+            `ENTRY | ${strategyRef.current} | ${symbolRef.current} | Confidence ${confidence.toFixed(
+              1
+            )}% | Stake ${currencyRef.current} ${stake.toFixed(
+              2
+            )} | Req #${payload.req_id}`,
+            'trade'
+          );
+
+          ws.send(
+            JSON.stringify(
+              payload
+            )
+          );
+        } catch (error) {
+          requestGuardRef.current =
+            invalidateBotGeneration(
+              requestGuardRef.current
+            );
+
+          syncRequestStatus();
+
+          proposalPendingRef.current =
+            false;
+
+          setProposalLoading(
+            false
+          );
+
+          lifecycleRef.current =
+            createTradeLifecycle();
+
+          syncLifecycleLabel();
+
+          stopAutoBot(
+            error.message ||
+              'Proposal setup error'
+          );
+        }
+      },
+      [
+        addBotLog,
+        buildProposalPayload,
+        clearManualProposal,
+        stopAutoBot,
+        syncLifecycleLabel,
+        syncRequestStatus,
+      ]
+    );
+
+  // ============================================================
+  // SIGNAL ENTRY
+  // ============================================================
+
+  const evaluateAutoEntry =
+    useCallback(
+      (history) => {
+        const result =
+          evaluateEntrySignal({
+            strategy:
+              strategyRef.current,
+
+            digitHistory:
+              history,
+
+            predictionDigit:
+              predictionDigitRef.current,
+          });
+
+        setSignal(
+          result
+        );
+
+        if (
+          !autoBotRunningRef.current
+        ) {
+          return;
+        }
+
+        const permission =
+          canOpenNewContract({
+            botRunning:
+              autoBotRunningRef.current,
+
+            emergencyStopped:
+              emergencyStoppedRef.current,
+
+            accountType:
+              accountTypeRef.current,
+
+            tradingConnected:
+              tradingWsRef.current
+                ?.readyState ===
+              WebSocket.OPEN,
+
+            proposalPending:
+              proposalPendingRef.current,
+
+            buyPending:
+              buyPendingRef.current,
+
+            contractOpen:
+              contractOpenRef.current,
+
+            cooldownUntil:
+              cooldownUntilRef.current,
+
+            tradeCount:
+              tradeCountRef.current,
+
+            maxTrades:
+              maxTradesRef.current,
+          });
+
+        if (
+          !permission.allowed
+        ) {
+          if (
+            permission.stopBot
+          ) {
+            stopAutoBot(
+              permission.reason
+            );
 
             return;
           }
 
           if (
-            data.msg_type ===
-              'balance' &&
-            data.balance
+            permission.cooldownRemaining
           ) {
-            setBalance(
-              data.balance.balance
-            );
-
-            const nextCurrency =
-              data.balance.currency ||
-              'USD';
-
-            setCurrency(
-              nextCurrency
-            );
-
-            currencyRef.current =
-              nextCurrency;
-          }
-
-          if (
-            data.msg_type ===
-              'proposal' &&
-            data.proposal
-          ) {
-            const resolved =
-              resolveProposalRequest(
-                requestGuardRef.current,
-                data
-              );
-
-            if (
-              !resolved.match.matched
-            ) {
-              addBotLog(
-                `Ignored stale proposal response${
-                  resolved.match.reqId !==
-                  null
-                    ? ` #${resolved.match.reqId}`
-                    : ''
-                }.`,
-                'system'
-              );
-
-              return;
-            }
-
-            requestGuardRef.current =
-              resolved.guard;
-
-            syncRequestStatus();
-
-            proposalPendingRef.current =
-              false;
-
-            setProposalLoading(false);
-
-            setProposalError('');
-
-            const owner =
-              resolved.match.owner;
-
-            if (
-              isAutoOwner(owner)
-            ) {
-              if (
-                emergencyStoppedRef.current ||
-                !autoBotRunningRef.current
-              ) {
-                addBotLog(
-                  'Auto proposal returned after bot stop. Purchase cancelled.',
-                  'system'
-                );
-
-                lifecycleRef.current =
-                  createTradeLifecycle();
-
-                syncLifecycleLabel();
-
-                return;
-              }
-
-              if (
-                accountTypeRef.current !==
-                'demo'
-              ) {
-                stopAutoBot(
-                  'Real account purchase blocked.'
-                );
-
-                return;
-              }
-
-              if (
-                contractOpenRef.current ||
-                buyPendingRef.current
-              ) {
-                return;
-              }
-
-              const askPrice =
-                Number(
-                  data.proposal.ask_price
-                );
-
-              if (
-                !data.proposal.id ||
-                !Number.isFinite(
-                  askPrice
-                ) ||
-                askPrice <= 0
-              ) {
-                stopAutoBot(
-                  'Invalid proposal returned.'
-                );
-
-                return;
-              }
-
-              const buyReqId =
-                nextReqId();
-
-              const registration =
-                beginBuyRequest(
-                  requestGuardRef.current,
-                  {
-                    reqId:
-                      buyReqId,
-
-                    owner:
-                      REQUEST_OWNER.AUTO,
-
-                    proposalId:
-                      data.proposal.id,
-                  }
-                );
-
-              if (
-                !registration.valid
-              ) {
-                stopAutoBot(
-                  registration.reason
-                );
-
-                return;
-              }
-
-              requestGuardRef.current =
-                registration.guard;
-
-              syncRequestStatus();
-
-              buyPendingRef.current =
-                true;
-
-              setBuyLoading(true);
-
-              setAutoBotStatus(
-                'Signal confirmed — buying demo contract...'
-              );
-
-              addBotLog(
-                `AUTO BUY sent | Req #${buyReqId}`,
-                'trade'
-              );
-
-              ws.send(
-                JSON.stringify({
-                  buy:
-                    data.proposal.id,
-
-                  price:
-                    askPrice,
-
-                  req_id:
-                    buyReqId,
-                })
-              );
-
-              return;
-            }
-
-            const freshnessRegistration =
-              registerProposalFreshness(
-                proposalFreshnessRef.current,
-                {
-                  proposalId:
-                    data.proposal.id,
-
-                  createdAt:
-                    Date.now(),
-                }
-              );
-
-            if (
-              !freshnessRegistration.valid
-            ) {
-              clearManualProposal();
-
-              setProposalError(
-                freshnessRegistration.reason
-              );
-
-              return;
-            }
-
-            proposalFreshnessRef.current =
-              freshnessRegistration.freshness;
-
-            setProposalData(
-              data.proposal
-            );
-
-            setProposalClock(
-              Date.now()
-            );
-
-            addBotLog(
-              `Manual proposal ready: ${data.proposal.id}. Freshness timer started.`,
-              'success'
-            );
-          }
-
-          if (
-            data.msg_type ===
-              'buy' &&
-            data.buy
-          ) {
-            const resolved =
-              resolveBuyRequest(
-                requestGuardRef.current,
-                data
-              );
-
-            if (
-              !resolved.match.matched
-            ) {
-              addBotLog(
-                `Ignored unmatched BUY response${
-                  resolved.match.reqId !==
-                  null
-                    ? ` #${resolved.match.reqId}`
-                    : ''
-                }.`,
-                'error'
-              );
-
-              return;
-            }
-
-            const owner =
-              resolved.match.owner;
-
-            requestGuardRef.current =
-              resolved.guard;
-
-            syncRequestStatus();
-
-            buyPendingRef.current =
-              false;
-
-            setBuyLoading(false);
-
-            setBuyError('');
-
-            if (
-              !isAutoOwner(owner)
-            ) {
-              clearManualProposal();
-            }
-
-            const contractId =
-              data.buy.contract_id;
-
-            if (!contractId) {
-              if (
-                isAutoOwner(owner)
-              ) {
-                stopAutoBot(
-                  'No contract ID returned.'
-                );
-              }
-
-              return;
-            }
-
-            if (
-              isAutoOwner(owner) &&
-              lifecycleRef.current?.mode !==
-                'auto'
-            ) {
-              lifecycleRef.current =
-                beginTradeLifecycle({
-                  mode: 'auto',
-                });
-            }
-
-            if (
-              !isAutoOwner(owner) &&
-              lifecycleRef.current?.mode !==
-                'manual'
-            ) {
-              lifecycleRef.current =
-                beginTradeLifecycle({
-                  mode: 'manual',
-                });
-            }
-
-            lifecycleRef.current =
-              attachContractToLifecycle(
-                lifecycleRef.current,
-                contractId
-              );
-
-            syncLifecycleLabel();
-
-            const recoveryRegistration =
-              registerLiveContract(
-                recoveryRef.current,
-                {
-                  contractId,
-
-                  accountId:
-                    accountIdRef.current,
-
-                  owner:
-                    isAutoOwner(owner)
-                      ? 'auto'
-                      : 'manual',
-                }
-              );
-
-            if (
-              recoveryRegistration.valid
-            ) {
-              recoveryRef.current =
-                recoveryRegistration.recovery;
-
-              syncRecoveryLabel();
-            } else {
-              addBotLog(
-                `Recovery registration warning: ${recoveryRegistration.reason}`,
-                'error'
-              );
-            }
-
-            contractOpenRef.current =
-              true;
-
-            setActiveContract({
-              contractId,
-
-              buyPrice:
-                data.buy.buy_price ??
-                data.buy.price ??
-                currentStakeRef.current,
-
-              transactionId:
-                data.buy.transaction_id ??
-                null,
-
-              isSold: false,
-            });
-
-            setContractProfit(0);
-
-            setContractStatus(
-              'LIVE'
-            );
-
             setAutoBotStatus(
-              `Contract #${contractId} active`
+              `Cooldown — ${permission.cooldownRemaining}s`
             );
 
-            addBotLog(
-              `${
-                isAutoOwner(owner)
-                  ? 'AUTO'
-                  : 'MANUAL'
-              } demo contract purchased #${contractId} | Req #${resolved.match.reqId}`,
-              'success'
-            );
-
-            ws.send(
-              JSON.stringify({
-                proposal_open_contract:
-                  1,
-
-                contract_id:
-                  contractId,
-
-                subscribe: 1,
-
-                req_id:
-                  nextReqId(),
-              })
-            );
+            return;
           }
 
-          if (
-            data.msg_type ===
-              'proposal_open_contract' &&
-            data.proposal_open_contract
-          ) {
-            const contract =
-              data.proposal_open_contract;
+          return;
+        }
 
-            if (
-              data.subscription?.id
-            ) {
-              contractSubscriptionRef.current =
-                data.subscription.id;
+        if (
+          !result.shouldTrade
+        ) {
+          setAutoBotStatus(
+            `WAIT — ${result.reason}`
+          );
 
-              recoveryRef.current =
-                attachRecoverySubscription(
-                  recoveryRef.current,
-                  data.subscription.id
-                );
-            }
+          return;
+        }
 
-            const recoveryStatusBefore =
-              getContractRecoveryStatus(
-                recoveryRef.current
-              );
+        if (
+          Number(
+            result.confidence
+          ) <
+          minimumConfidenceRef.current
+        ) {
+          setAutoBotStatus(
+            `WAIT — Signal ${Number(
+              result.confidence
+            ).toFixed(
+              1
+            )}% below minimum ${minimumConfidenceRef.current}%`
+          );
 
-            if (
-              recoveryStatusBefore.recovering
-            ) {
-              recoveryRef.current =
-                completeContractRecovery(
-                  recoveryRef.current,
-                  data.subscription?.id ||
-                    null
-                );
+          return;
+        }
 
-              syncRecoveryLabel();
+        requestAutoProposal(
+          result
+        );
+      },
+      [
+        requestAutoProposal,
+        stopAutoBot,
+      ]
+    );
 
-              addBotLog(
-                `Contract #${contract.contract_id} monitor recovered successfully.`,
-                'success'
-              );
-            } else {
-              syncRecoveryLabel();
-            }
+  // ============================================================
+  // AUTO SETTLEMENT
+  // ============================================================
 
-            const profit =
-              Number(
-                contract.profit ??
-                  0
-              );
+  const handleAutoSettlement =
+    useCallback(
+      (contract) => {
+        const contractId =
+          contract.contract_id;
 
-            const safeProfit =
-              Number.isFinite(
-                profit
-              )
-                ? profit
-                : 0;
+        if (
+          !shouldProcessSettlement(
+            lifecycleRef.current,
+            contractId
+          )
+        ) {
+          return;
+        }
 
-            setContractProfit(
-              safeProfit
-            );
+        const result =
+          classifyTradeResult(
+            contract.profit
+          );
 
-            setActiveContract(
-              (previous) => ({
-                ...(previous ||
-                  {}),
+        lifecycleRef.current =
+          markLifecycleSettled(
+            lifecycleRef.current,
+            contractId
+          );
 
-                contractId:
-                  contract.contract_id,
+        syncLifecycleLabel();
 
-                contractType:
-                  contract.contract_type,
+        contractOpenRef.current =
+          false;
 
-                currency:
-                  contract.currency,
+        const settlement =
+          evaluateSettlementSafety({
+            profit:
+              result.profit,
 
-                buyPrice:
-                  contract.buy_price,
+            totalProfit:
+              totalProfitRef.current,
 
-                payout:
-                  contract.payout,
+            tradeCount:
+              tradeCountRef.current,
 
-                entrySpot:
-                  contract.entry_spot,
+            consecutiveLosses:
+              consecutiveLossesRef.current,
 
-                currentSpot:
-                  contract.current_spot,
+            takeProfit:
+              takeProfitRef.current,
 
-                exitSpot:
-                  contract.exit_spot,
+            stopLoss:
+              stopLossRef.current,
 
-                isSold:
-                  Boolean(
-                    contract.is_sold
-                  ),
+            maxTrades:
+              maxTradesRef.current,
 
-                status:
-                  contract.status,
-              })
-            );
+            maxConsecutiveLosses:
+              maxLossesRef.current,
+          });
 
-            if (
-              !contract.is_sold
-            ) {
-              contractOpenRef.current =
-                true;
+        totalProfitRef.current =
+          settlement.nextTotalProfit;
 
-              setContractStatus(
-                'LIVE'
-              );
+        setTotalProfit(
+          settlement.nextTotalProfit
+        );
 
-              return;
-            }
+        tradeCountRef.current =
+          settlement.nextTradeCount;
 
-            contractOpenRef.current =
-              false;
+        setTradeCount(
+          settlement.nextTradeCount
+        );
 
-            clearRecoveryTimer();
+        consecutiveLossesRef.current =
+          settlement.nextConsecutiveLosses;
 
-            recoveryRef.current =
-              markRecoveredContractSettled(
-                recoveryRef.current,
-                contract.contract_id
-              );
+        setConsecutiveLosses(
+          settlement.nextConsecutiveLosses
+        );
 
-            syncRecoveryLabel();
-
-            const finalStatus =
-              contract.status ||
-              (safeProfit > 0
-                ? 'won'
-                : safeProfit < 0
-                ? 'lost'
-                : 'settled');
-
-            setContractStatus(
-              String(
-                finalStatus
-              ).toUpperCase()
-            );
-
-            if (
-              contractSubscriptionRef.current
-            ) {
-              try {
-                ws.send(
-                  JSON.stringify({
-                    forget:
-                      contractSubscriptionRef.current,
-                  })
-                );
-              } catch {}
-
-              contractSubscriptionRef.current =
-                null;
-            }
-
-            try {
-              ws.send(
-                JSON.stringify({
-                  balance: 1,
-
-                  req_id:
-                    nextReqId(),
-                })
-              );
-            } catch {}
-
-            const autoContract =
-              isAutoTrade(
-                lifecycleRef.current,
-                contract.contract_id
-              );
-
-            if (autoContract) {
-              handleAutoSettlement(
-                contract
-              );
-
-              return;
-            }
-
-            if (
-              !shouldProcessSettlement(
-                lifecycleRef.current,
-                contract.contract_id
-              )
-            ) {
-              return;
-            }
-
-            lifecycleRef.current =
-              markLifecycleSettled(
-                lifecycleRef.current,
-                contract.contract_id
-              );
-
-            syncLifecycleLabel();
-
-            const result =
-              classifyTradeResult(
-                safeProfit
-              );
-
-            addBotLog(
-              `Manual demo contract settled | ${
-                result.profit >= 0
-                  ? '+'
-                  : ''
-              }${result.profit.toFixed(
-                2
-              )}`,
-              result.won
-                ? 'success'
-                : result.lost
-                ? 'error'
-                : 'system'
-            );
-          }
-        } catch (error) {
-          console.error(
-            'Trading message error:',
-            error
+        if (result.won) {
+          setWinCount(
+            (value) =>
+              value + 1
+          );
+        } else if (
+          result.lost
+        ) {
+          setLossCount(
+            (value) =>
+              value + 1
+          );
+        } else {
+          setDrawCount(
+            (value) =>
+              value + 1
           );
         }
-      };
 
-      ws.onerror = () => {
-        setIsTradingConnected(
-          false
+        const tradeStake =
+          Number(
+            contract.buy_price ??
+              currentStakeRef.current
+          );
+
+        setTradeHistory(
+          (previous) => [
+            {
+              id:
+                contract.contract_id,
+
+              result:
+                result.result,
+
+              profit:
+                result.profit,
+
+              stake:
+                tradeStake,
+
+              strategy:
+                contract.contract_type ||
+                strategyRef.current,
+
+              symbol:
+                symbolRef.current,
+
+              time:
+                new Date()
+                  .toLocaleTimeString(),
+            },
+
+            ...previous.slice(
+              0,
+              49
+            ),
+          ]
         );
-      };
 
-      ws.onclose = () => {
+        if (result.won) {
+          addBotLog(
+            `WIN +${result.profit.toFixed(
+              2
+            )} ${
+              contract.currency ||
+              currencyRef.current
+            } | Net ${
+              settlement.nextTotalProfit >=
+              0
+                ? '+'
+                : ''
+            }${settlement.nextTotalProfit.toFixed(
+              2
+            )}`,
+            'success'
+          );
+        } else if (
+          result.lost
+        ) {
+          addBotLog(
+            `LOSS ${result.profit.toFixed(
+              2
+            )} ${
+              contract.currency ||
+              currencyRef.current
+            } | Net ${settlement.nextTotalProfit.toFixed(
+              2
+            )}`,
+            'error'
+          );
+        } else {
+          addBotLog(
+            `DRAW 0.00 ${
+              contract.currency ||
+              currencyRef.current
+            } | Stake unchanged`,
+            'system'
+          );
+        }
+
+        if (
+          settlement.stopBot
+        ) {
+          stopAutoBot(
+            settlement.stopReason
+          );
+
+          return;
+        }
+
+        if (result.won) {
+          const stakeResult =
+            calculateNextStake({
+              won: true,
+
+              baseStake:
+                baseStakeRef.current,
+
+              currentStake:
+                currentStakeRef.current,
+
+              martingale:
+                martingaleRef.current,
+
+              maxStake:
+                maxStakeRef.current,
+            });
+
+          currentStakeRef.current =
+            stakeResult.stake;
+
+          setCurrentStake(
+            stakeResult.stake.toFixed(
+              2
+            )
+          );
+        } else if (
+          result.lost
+        ) {
+          const stakeResult =
+            calculateNextStake({
+              won: false,
+
+              baseStake:
+                baseStakeRef.current,
+
+              currentStake:
+                currentStakeRef.current,
+
+              martingale:
+                martingaleRef.current,
+
+              maxStake:
+                maxStakeRef.current,
+            });
+
+          if (
+            !stakeResult.allowed
+          ) {
+            addBotLog(
+              stakeResult.reason,
+              'error'
+            );
+
+            stopAutoBot(
+              stakeResult.reason
+            );
+
+            return;
+          }
+
+          currentStakeRef.current =
+            stakeResult.stake;
+
+          setCurrentStake(
+            stakeResult.stake.toFixed(
+              2
+            )
+          );
+
+          addBotLog(
+            `Next stake ${stakeResult.stake.toFixed(
+              2
+            )}`,
+            'system'
+          );
+        } else {
+          setCurrentStake(
+            currentStakeRef.current.toFixed(
+              2
+            )
+          );
+        }
+
+        const postSettlement =
+          getPostSettlementAction({
+            lifecycle:
+              lifecycleRef.current,
+
+            botRunning:
+              autoBotRunningRef.current,
+
+            emergencyStopped:
+              emergencyStoppedRef.current,
+
+            safetyStopTriggered:
+              false,
+          });
+
+        if (
+          !postSettlement.continueBot
+        ) {
+          setAutoBotStatus(
+            postSettlement.reason
+          );
+
+          addBotLog(
+            `Trade recorded. ${postSettlement.reason}`,
+            'system'
+          );
+
+          return;
+        }
+
+        cooldownUntilRef.current =
+          createCooldown(
+            cooldownSecondsRef.current
+          );
+
+        const sessionStatus =
+          buildSessionStatus({
+            running: true,
+
+            emergencyStopped:
+              false,
+
+            contractOpen:
+              false,
+
+            proposalPending:
+              false,
+
+            buyPending:
+              false,
+
+            cooldownUntil:
+              cooldownUntilRef.current,
+          });
+
+        setAutoBotStatus(
+          sessionStatus.label
+        );
+
+        addBotLog(
+          'Contract settled. Waiting for the next valid strategy signal.',
+          'system'
+        );
+      },
+      [
+        addBotLog,
+        stopAutoBot,
+        syncLifecycleLabel,
+      ]
+    );
+
+  // ============================================================
+  // TRADING SOCKET
+  // ============================================================
+
+  const connectTradingSocket =
+    useCallback(
+      (wsUrl) => {
+        if (!wsUrl) {
+          setIsTradingConnected(
+            false
+          );
+
+          return;
+        }
+
         if (
           tradingPingRef.current
         ) {
@@ -2503,76 +2048,1085 @@ export default function BinarySpotPro() {
             null;
         }
 
-        setIsTradingConnected(
-          false
-        );
+        if (
+          tradingWsRef.current
+        ) {
+          try {
+            tradingWsRef.current.onclose =
+              null;
 
-        const recoveryStatus =
-          getContractRecoveryStatus(
-            recoveryRef.current
+            tradingWsRef.current.onerror =
+              null;
+
+            tradingWsRef.current.close();
+          } catch {}
+        }
+
+        contractSubscriptionRef.current =
+          null;
+
+        const ws =
+          new WebSocket(
+            wsUrl
           );
 
-        if (
-          contractOpenRef.current &&
-          recoveryStatus.hasContract &&
-          !recoveryStatus.settled
-        ) {
-          recoveryRef.current =
-            markContractDisconnected(
-              recoveryRef.current
-            );
+        tradingWsRef.current =
+          ws;
 
-          syncRecoveryLabel();
+        ws.onopen = () => {
+          recoveryFetchRunningRef.current =
+            false;
 
-          setContractStatus(
-            'RECOVERY REQUIRED'
+          setIsTradingConnected(
+            true
           );
 
           addBotLog(
-            `Trading socket disconnected while contract #${recoveryStatus.contractId} is active. Recovery queued.`,
-            'error'
+            'Authenticated Deriv trading socket connected.',
+            'system'
           );
+
+          ws.send(
+            JSON.stringify({
+              balance: 1,
+              subscribe: 1,
+              req_id:
+                nextReqId(),
+            })
+          );
+
+          const recoveryStatus =
+            getContractRecoveryStatus(
+              recoveryRef.current
+            );
+
+          if (
+            recoveryStatus.hasContract &&
+            recoveryStatus.needsRecovery
+          ) {
+            const permission =
+              canRecoverContract(
+                recoveryRef.current,
+                {
+                  accountId:
+                    accountIdRef.current,
+
+                  tradingConnected:
+                    true,
+                }
+              );
+
+            if (
+              permission.allowed
+            ) {
+              recoveryRef.current =
+                beginContractRecovery(
+                  recoveryRef.current
+                );
+
+              syncRecoveryLabel();
+
+              const recoveryRequest =
+                buildContractRecoveryRequest(
+                  recoveryRef.current,
+                  nextReqId()
+                );
+
+              if (
+                recoveryRequest.valid
+              ) {
+                setContractStatus(
+                  'RECOVERING'
+                );
+
+                addBotLog(
+                  `Recovering contract #${recoveryStatus.contractId} on fresh authenticated socket.`,
+                  'system'
+                );
+
+                ws.send(
+                  JSON.stringify(
+                    recoveryRequest.payload
+                  )
+                );
+              } else {
+                registerRecoveryFailure(
+                  `Recovery request could not be built: ${recoveryRequest.reason}.`
+                );
+              }
+            } else {
+              registerRecoveryFailure(
+                `Contract recovery blocked: ${permission.reason}.`
+              );
+            }
+          }
+
+          tradingPingRef.current =
+            setInterval(
+              () => {
+                if (
+                  ws.readyState ===
+                  WebSocket.OPEN
+                ) {
+                  ws.send(
+                    JSON.stringify({
+                      ping: 1,
+                    })
+                  );
+                }
+              },
+              30000
+            );
+        };
+
+        ws.onmessage = (
+          event
+        ) => {
+          try {
+            const data =
+              JSON.parse(
+                event.data
+              );
+
+            // ==================================================
+            // DERIV ERROR
+            // ==================================================
+
+            if (data.error) {
+              const message =
+                data.error.message ||
+                'Deriv rejected the request.';
+
+              if (
+                data.echo_req
+                  ?.proposal ===
+                1
+              ) {
+                const resolved =
+                  resolveProposalRequest(
+                    requestGuardRef.current,
+                    data
+                  );
+
+                if (
+                  resolved.match
+                    .matched
+                ) {
+                  requestGuardRef.current =
+                    resolved.guard;
+
+                  proposalPendingRef.current =
+                    false;
+
+                  setProposalLoading(
+                    false
+                  );
+
+                  setProposalError(
+                    message
+                  );
+
+                  if (
+                    !isAutoOwner(
+                      resolved.match
+                        .owner
+                    )
+                  ) {
+                    clearManualProposal();
+                  }
+
+                  syncRequestStatus();
+                }
+              }
+
+              if (
+                data.echo_req?.buy
+              ) {
+                const resolved =
+                  resolveBuyRequest(
+                    requestGuardRef.current,
+                    data
+                  );
+
+                if (
+                  resolved.match
+                    .matched
+                ) {
+                  requestGuardRef.current =
+                    resolved.guard;
+
+                  buyPendingRef.current =
+                    false;
+
+                  setBuyLoading(
+                    false
+                  );
+
+                  setBuyError(
+                    message
+                  );
+
+                  syncRequestStatus();
+                }
+              }
+
+              if (
+                data.echo_req
+                  ?.proposal_open_contract ===
+                1
+              ) {
+                const recoveryStatus =
+                  getContractRecoveryStatus(
+                    recoveryRef.current
+                  );
+
+                if (
+                  recoveryStatus.recovering
+                ) {
+                  registerRecoveryFailure(
+                    `Contract recovery request failed: ${message}.`
+                  );
+                }
+              }
+
+              addBotLog(
+                message,
+                'error'
+              );
+
+              if (
+                autoBotRunningRef.current
+              ) {
+                stopAutoBot(
+                  message
+                );
+              }
+
+              return;
+            }
+
+            // ==================================================
+            // BALANCE
+            // ==================================================
+
+            if (
+              data.msg_type ===
+                'balance' &&
+              data.balance
+            ) {
+              setBalance(
+                data.balance
+                  .balance
+              );
+
+              const nextCurrency =
+                data.balance
+                  .currency ||
+                'USD';
+
+              setCurrency(
+                nextCurrency
+              );
+
+              currencyRef.current =
+                nextCurrency;
+            }
+
+            // ==================================================
+            // PROPOSAL
+            // ==================================================
+
+            if (
+              data.msg_type ===
+                'proposal' &&
+              data.proposal
+            ) {
+              const resolved =
+                resolveProposalRequest(
+                  requestGuardRef.current,
+                  data
+                );
+
+              if (
+                !resolved.match
+                  .matched
+              ) {
+                addBotLog(
+                  `Ignored stale proposal response${
+                    resolved.match
+                      .reqId !== null
+                      ? ` #${resolved.match.reqId}`
+                      : ''
+                  }.`,
+                  'system'
+                );
+
+                return;
+              }
+
+              requestGuardRef.current =
+                resolved.guard;
+
+              syncRequestStatus();
+
+              proposalPendingRef.current =
+                false;
+
+              setProposalLoading(
+                false
+              );
+
+              setProposalError('');
+
+              const owner =
+                resolved.match.owner;
+
+              // ================================================
+              // AUTO PROPOSAL
+              // ================================================
+
+              if (
+                isAutoOwner(
+                  owner
+                )
+              ) {
+                if (
+                  emergencyStoppedRef.current ||
+                  !autoBotRunningRef.current
+                ) {
+                  addBotLog(
+                    'Auto proposal returned after bot stop. Purchase cancelled.',
+                    'system'
+                  );
+
+                  lifecycleRef.current =
+                    createTradeLifecycle();
+
+                  syncLifecycleLabel();
+
+                  return;
+                }
+
+                if (
+                  accountTypeRef.current !==
+                  'demo'
+                ) {
+                  stopAutoBot(
+                    'Real account purchase blocked.'
+                  );
+
+                  return;
+                }
+
+                if (
+                  contractOpenRef.current ||
+                  buyPendingRef.current
+                ) {
+                  return;
+                }
+
+                const askPrice =
+                  Number(
+                    data.proposal
+                      .ask_price
+                  );
+
+                if (
+                  !data.proposal
+                    .id ||
+                  !Number.isFinite(
+                    askPrice
+                  ) ||
+                  askPrice <= 0
+                ) {
+                  stopAutoBot(
+                    'Invalid proposal returned.'
+                  );
+
+                  return;
+                }
+
+                const buyReqId =
+                  nextReqId();
+
+                const registration =
+                  beginBuyRequest(
+                    requestGuardRef.current,
+                    {
+                      reqId:
+                        buyReqId,
+
+                      owner:
+                        REQUEST_OWNER.AUTO,
+
+                      proposalId:
+                        data.proposal
+                          .id,
+                    }
+                  );
+
+                if (
+                  !registration.valid
+                ) {
+                  stopAutoBot(
+                    registration.reason
+                  );
+
+                  return;
+                }
+
+                requestGuardRef.current =
+                  registration.guard;
+
+                syncRequestStatus();
+
+                buyPendingRef.current =
+                  true;
+
+                setBuyLoading(
+                  true
+                );
+
+                setAutoBotStatus(
+                  'Signal confirmed — buying demo contract...'
+                );
+
+                addBotLog(
+                  `AUTO BUY sent | Req #${buyReqId}`,
+                  'trade'
+                );
+
+                ws.send(
+                  JSON.stringify({
+                    buy:
+                      data.proposal
+                        .id,
+
+                    price:
+                      askPrice,
+
+                    req_id:
+                      buyReqId,
+                  })
+                );
+
+                return;
+              }
+
+              // ================================================
+              // MANUAL PROPOSAL
+              // ================================================
+
+              const freshnessRegistration =
+                registerProposalFreshness(
+                  proposalFreshnessRef.current,
+                  {
+                    proposalId:
+                      data.proposal
+                        .id,
+
+                    createdAt:
+                      Date.now(),
+                  }
+                );
+
+              if (
+                !freshnessRegistration.valid
+              ) {
+                clearManualProposal();
+
+                setProposalError(
+                  freshnessRegistration.reason
+                );
+
+                return;
+              }
+
+              proposalFreshnessRef.current =
+                freshnessRegistration.freshness;
+
+              setProposalData(
+                data.proposal
+              );
+
+              setProposalClock(
+                Date.now()
+              );
+
+              addBotLog(
+                `Manual proposal ready: ${data.proposal.id}. Freshness timer started.`,
+                'success'
+              );
+            }
+
+            // ==================================================
+            // BUY
+            // ==================================================
+
+            if (
+              data.msg_type ===
+                'buy' &&
+              data.buy
+            ) {
+              const resolved =
+                resolveBuyRequest(
+                  requestGuardRef.current,
+                  data
+                );
+
+              if (
+                !resolved.match
+                  .matched
+              ) {
+                addBotLog(
+                  `Ignored unmatched BUY response${
+                    resolved.match
+                      .reqId !== null
+                      ? ` #${resolved.match.reqId}`
+                      : ''
+                  }.`,
+                  'error'
+                );
+
+                return;
+              }
+
+              const owner =
+                resolved.match.owner;
+
+              requestGuardRef.current =
+                resolved.guard;
+
+              syncRequestStatus();
+
+              buyPendingRef.current =
+                false;
+
+              setBuyLoading(
+                false
+              );
+
+              setBuyError('');
+
+              if (
+                !isAutoOwner(
+                  owner
+                )
+              ) {
+                clearManualProposal();
+              }
+
+              const contractId =
+                data.buy
+                  .contract_id;
+
+              if (!contractId) {
+                if (
+                  isAutoOwner(
+                    owner
+                  )
+                ) {
+                  stopAutoBot(
+                    'No contract ID returned.'
+                  );
+                }
+
+                return;
+              }
+
+              if (
+                isAutoOwner(
+                  owner
+                ) &&
+                lifecycleRef.current
+                  ?.mode !==
+                  'auto'
+              ) {
+                lifecycleRef.current =
+                  beginTradeLifecycle({
+                    mode: 'auto',
+                  });
+              }
+
+              if (
+                !isAutoOwner(
+                  owner
+                ) &&
+                lifecycleRef.current
+                  ?.mode !==
+                  'manual'
+              ) {
+                lifecycleRef.current =
+                  beginTradeLifecycle({
+                    mode:
+                      'manual',
+                  });
+              }
+
+              lifecycleRef.current =
+                attachContractToLifecycle(
+                  lifecycleRef.current,
+                  contractId
+                );
+
+              syncLifecycleLabel();
+
+              const recoveryRegistration =
+                registerLiveContract(
+                  recoveryRef.current,
+                  {
+                    contractId,
+
+                    accountId:
+                      accountIdRef.current,
+
+                    owner:
+                      isAutoOwner(
+                        owner
+                      )
+                        ? 'auto'
+                        : 'manual',
+                  }
+                );
+
+              if (
+                recoveryRegistration.valid
+              ) {
+                recoveryRef.current =
+                  recoveryRegistration.recovery;
+
+                recoveryBackoffRef.current =
+                  resetRecoveryBackoff(
+                    recoveryBackoffRef.current
+                  );
+
+                syncRecoveryLabel();
+                syncRecoveryBackoff();
+              } else {
+                addBotLog(
+                  `Recovery registration warning: ${recoveryRegistration.reason}`,
+                  'error'
+                );
+              }
+
+              contractOpenRef.current =
+                true;
+
+              setActiveContract({
+                contractId,
+
+                buyPrice:
+                  data.buy
+                    .buy_price ??
+                  data.buy
+                    .price ??
+                  currentStakeRef.current,
+
+                transactionId:
+                  data.buy
+                    .transaction_id ??
+                  null,
+
+                isSold:
+                  false,
+              });
+
+              setContractProfit(
+                0
+              );
+
+              setContractStatus(
+                'LIVE'
+              );
+
+              setAutoBotStatus(
+                `Contract #${contractId} active`
+              );
+
+              addBotLog(
+                `${
+                  isAutoOwner(
+                    owner
+                  )
+                    ? 'AUTO'
+                    : 'MANUAL'
+                } demo contract purchased #${contractId} | Req #${resolved.match.reqId}`,
+                'success'
+              );
+
+              ws.send(
+                JSON.stringify({
+                  proposal_open_contract:
+                    1,
+
+                  contract_id:
+                    contractId,
+
+                  subscribe: 1,
+
+                  req_id:
+                    nextReqId(),
+                })
+              );
+            }
+
+            // ==================================================
+            // CONTRACT MONITOR
+            // ==================================================
+
+            if (
+              data.msg_type ===
+                'proposal_open_contract' &&
+              data.proposal_open_contract
+            ) {
+              const contract =
+                data.proposal_open_contract;
+
+              if (
+                data.subscription
+                  ?.id
+              ) {
+                contractSubscriptionRef.current =
+                  data.subscription.id;
+
+                recoveryRef.current =
+                  attachRecoverySubscription(
+                    recoveryRef.current,
+                    data.subscription.id
+                  );
+              }
+
+              const recoveryStatusBefore =
+                getContractRecoveryStatus(
+                  recoveryRef.current
+                );
+
+              if (
+                recoveryStatusBefore.recovering
+              ) {
+                recoveryRef.current =
+                  completeContractRecovery(
+                    recoveryRef.current,
+                    data.subscription
+                      ?.id ||
+                      null
+                  );
+
+                recoveryBackoffRef.current =
+                  resetRecoveryBackoff(
+                    recoveryBackoffRef.current
+                  );
+
+                clearRecoveryTimer();
+
+                syncRecoveryLabel();
+                syncRecoveryBackoff();
+
+                addBotLog(
+                  `Contract #${contract.contract_id} monitor recovered successfully.`,
+                  'success'
+                );
+              } else {
+                syncRecoveryLabel();
+              }
+
+              const profit =
+                Number(
+                  contract.profit ??
+                    0
+                );
+
+              const safeProfit =
+                Number.isFinite(
+                  profit
+                )
+                  ? profit
+                  : 0;
+
+              setContractProfit(
+                safeProfit
+              );
+
+              setActiveContract(
+                (previous) => ({
+                  ...(previous ||
+                    {}),
+
+                  contractId:
+                    contract.contract_id,
+
+                  contractType:
+                    contract.contract_type,
+
+                  currency:
+                    contract.currency,
+
+                  buyPrice:
+                    contract.buy_price,
+
+                  payout:
+                    contract.payout,
+
+                  entrySpot:
+                    contract.entry_spot,
+
+                  currentSpot:
+                    contract.current_spot,
+
+                  exitSpot:
+                    contract.exit_spot,
+
+                  isSold:
+                    Boolean(
+                      contract.is_sold
+                    ),
+
+                  status:
+                    contract.status,
+                })
+              );
+
+              if (
+                !contract.is_sold
+              ) {
+                contractOpenRef.current =
+                  true;
+
+                setContractStatus(
+                  'LIVE'
+                );
+
+                return;
+              }
+
+              contractOpenRef.current =
+                false;
+
+              clearRecoveryTimer();
+
+              recoveryRef.current =
+                markRecoveredContractSettled(
+                  recoveryRef.current,
+                  contract.contract_id
+                );
+
+              recoveryBackoffRef.current =
+                resetRecoveryBackoff(
+                  recoveryBackoffRef.current
+                );
+
+              syncRecoveryLabel();
+              syncRecoveryBackoff();
+
+              const finalStatus =
+                contract.status ||
+                (safeProfit > 0
+                  ? 'won'
+                  : safeProfit < 0
+                  ? 'lost'
+                  : 'settled');
+
+              setContractStatus(
+                String(
+                  finalStatus
+                ).toUpperCase()
+              );
+
+              if (
+                contractSubscriptionRef.current
+              ) {
+                try {
+                  ws.send(
+                    JSON.stringify({
+                      forget:
+                        contractSubscriptionRef.current,
+                    })
+                  );
+                } catch {}
+
+                contractSubscriptionRef.current =
+                  null;
+              }
+
+              try {
+                ws.send(
+                  JSON.stringify({
+                    balance: 1,
+
+                    req_id:
+                      nextReqId(),
+                  })
+                );
+              } catch {}
+
+              const autoContract =
+                isAutoTrade(
+                  lifecycleRef.current,
+                  contract.contract_id
+                );
+
+              if (
+                autoContract
+              ) {
+                handleAutoSettlement(
+                  contract
+                );
+
+                return;
+              }
+
+              if (
+                !shouldProcessSettlement(
+                  lifecycleRef.current,
+                  contract.contract_id
+                )
+              ) {
+                return;
+              }
+
+              lifecycleRef.current =
+                markLifecycleSettled(
+                  lifecycleRef.current,
+                  contract.contract_id
+                );
+
+              syncLifecycleLabel();
+
+              const result =
+                classifyTradeResult(
+                  safeProfit
+                );
+
+              addBotLog(
+                `Manual demo contract settled | ${
+                  result.profit >=
+                  0
+                    ? '+'
+                    : ''
+                }${result.profit.toFixed(
+                  2
+                )}`,
+                result.won
+                  ? 'success'
+                  : result.lost
+                  ? 'error'
+                  : 'system'
+              );
+            }
+          } catch (error) {
+            console.error(
+              'Trading message error:',
+              error
+            );
+          }
+        };
+
+        ws.onerror = () => {
+          setIsTradingConnected(
+            false
+          );
+        };
+
+        ws.onclose = () => {
+          if (
+            tradingPingRef.current
+          ) {
+            clearInterval(
+              tradingPingRef.current
+            );
+
+            tradingPingRef.current =
+              null;
+          }
+
+          setIsTradingConnected(
+            false
+          );
+
+          const recoveryStatus =
+            getContractRecoveryStatus(
+              recoveryRef.current
+            );
+
+          if (
+            contractOpenRef.current &&
+            recoveryStatus.hasContract &&
+            !recoveryStatus.settled
+          ) {
+            recoveryRef.current =
+              markContractDisconnected(
+                recoveryRef.current
+              );
+
+            syncRecoveryLabel();
+
+            if (
+              recoveryFetchRunningRef.current
+            ) {
+              recoveryFetchRunningRef.current =
+                false;
+
+              registerRecoveryFailure(
+                'Recovery WebSocket connection closed before the contract monitor was restored.'
+              );
+
+              return;
+            }
+
+            setContractStatus(
+              'RECOVERY REQUIRED'
+            );
+
+            addBotLog(
+              `Trading socket disconnected while contract #${recoveryStatus.contractId} is active. Recovery queued.`,
+              'error'
+            );
+
+            if (
+              autoBotRunningRef.current
+            ) {
+              stopAutoBot(
+                'Trading socket disconnected. Recovering active contract.'
+              );
+            }
+
+            queueContractRecovery();
+
+            return;
+          }
+
+          recoveryFetchRunningRef.current =
+            false;
 
           if (
             autoBotRunningRef.current
           ) {
             stopAutoBot(
-              'Trading socket disconnected. Recovering active contract.'
+              'Trading socket closed.'
             );
           }
-
-          queueContractRecovery();
-
-          return;
-        }
-
-        if (
-          autoBotRunningRef.current
-        ) {
-          stopAutoBot(
-            'Trading socket closed.'
-          );
-        }
-      };
-    },
-    [
-      addBotLog,
-      clearManualProposal,
-      clearRecoveryTimer,
-      handleAutoSettlement,
-      queueContractRecovery,
-      stopAutoBot,
-      syncLifecycleLabel,
-      syncRecoveryLabel,
-      syncRequestStatus,
-    ]
-  );
+        };
+      },
+      [
+        addBotLog,
+        clearManualProposal,
+        clearRecoveryTimer,
+        handleAutoSettlement,
+        queueContractRecovery,
+        registerRecoveryFailure,
+        stopAutoBot,
+        syncLifecycleLabel,
+        syncRecoveryBackoff,
+        syncRecoveryLabel,
+        syncRequestStatus,
+      ]
+    );
 
   connectTradingSocketRef.current =
     connectTradingSocket;
 
   // ============================================================
-  // ACTIVE CONTRACT RECOVERY RUNNER
+  // RECOVERY RUNNER
   // ============================================================
 
   recoveryRunnerRef.current =
@@ -2587,6 +3141,23 @@ export default function BinarySpotPro() {
         status.settled ||
         !status.needsRecovery
       ) {
+        return;
+      }
+
+      const permission =
+        canAttemptRecovery(
+          recoveryBackoffRef.current
+        );
+
+      if (
+        !permission.allowed
+      ) {
+        setContractStatus(
+          'RECOVERY PAUSED'
+        );
+
+        syncRecoveryBackoff();
+
         return;
       }
 
@@ -2605,7 +3176,7 @@ export default function BinarySpotPro() {
         );
 
         addBotLog(
-          `Requesting fresh authenticated session for contract #${status.contractId}.`,
+          `Recovery attempt ${permission.attempts + 1}/${permission.maxAttempts} for contract #${status.contractId}.`,
           'system'
         );
 
@@ -2674,239 +3245,313 @@ export default function BinarySpotPro() {
         recoveryFetchRunningRef.current =
           false;
 
-        recoveryRef.current =
-          failContractRecovery(
-            recoveryRef.current
-          );
-
-        syncRecoveryLabel();
-
-        setContractStatus(
-          'RECOVERY REQUIRED'
-        );
-
-        addBotLog(
-          `Recovery retry needed: ${
+        registerRecoveryFailure(
+          `Recovery attempt failed: ${
             error.message ||
             'Unknown recovery error'
-          }`,
-          'error'
+          }.`
         );
-
-        queueContractRecovery();
       }
     };
 
   // ============================================================
-  // SESSION
+  // MANUAL RECOVERY RETRY
   // ============================================================
 
-  const loadDerivSession = useCallback(
-    async (
-      requestedAccountId = ''
-    ) => {
-      try {
-        setIsLoading(true);
+  const retryContractRecovery =
+    () => {
+      const recoveryStatus =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
 
-        setAuthError('');
+      if (
+        !recoveryStatus.hasContract ||
+        recoveryStatus.settled
+      ) {
+        return;
+      }
 
-        let endpoint =
-          '/api/auth/deriv/session';
+      if (
+        recoveryFetchRunningRef.current
+      ) {
+        return;
+      }
 
-        if (
-          requestedAccountId
-        ) {
-          endpoint +=
-            `?account_id=${encodeURIComponent(
-              requestedAccountId
-            )}`;
-        }
+      clearRecoveryTimer();
 
-        const response =
-          await fetch(
-            endpoint,
-            {
-              method: 'GET',
+      recoveryBackoffRef.current =
+        allowManualRecoveryRetry(
+          recoveryBackoffRef.current
+        );
 
-              credentials:
-                'include',
+      recoveryRef.current =
+        markContractDisconnected(
+          recoveryRef.current
+        );
 
-              cache:
-                'no-store',
-            }
+      syncRecoveryLabel();
+      syncRecoveryBackoff();
+
+      setContractStatus(
+        'MANUAL RECOVERY'
+      );
+
+      addBotLog(
+        `Manual recovery retry started for contract #${recoveryStatus.contractId}.`,
+        'system'
+      );
+
+      queueContractRecovery(
+        0
+      );
+    };
+
+  // ============================================================
+  // LOAD DERIV SESSION
+  // ============================================================
+
+  const loadDerivSession =
+    useCallback(
+      async (
+        requestedAccountId =
+          ''
+      ) => {
+        try {
+          setIsLoading(
+            true
           );
 
-        const data =
-          await response.json();
+          setAuthError('');
 
-        if (
-          !response.ok ||
-          !data.authenticated
-        ) {
+          let endpoint =
+            '/api/auth/deriv/session';
+
+          if (
+            requestedAccountId
+          ) {
+            endpoint +=
+              `?account_id=${encodeURIComponent(
+                requestedAccountId
+              )}`;
+          }
+
+          const response =
+            await fetch(
+              endpoint,
+              {
+                method:
+                  'GET',
+
+                credentials:
+                  'include',
+
+                cache:
+                  'no-store',
+              }
+            );
+
+          const data =
+            await response.json();
+
+          if (
+            !response.ok ||
+            !data.authenticated
+          ) {
+            setIsAuthorized(
+              false
+            );
+
+            closeTradingSocket();
+
+            if (
+              response.status !==
+                401 &&
+              data.error
+            ) {
+              setAuthError(
+                data.error
+              );
+            }
+
+            return;
+          }
+
           setIsAuthorized(
+            true
+          );
+
+          setAccounts(
+            Array.isArray(
+              data.accounts
+            )
+              ? data.accounts
+              : []
+          );
+
+          if (
+            !data.account
+          ) {
+            setAuthError(
+              'No Deriv Options account was found.'
+            );
+
+            return;
+          }
+
+          setAccountId(
+            data.account.id ||
+              ''
+          );
+
+          accountIdRef.current =
+            data.account.id ||
+            '';
+
+          setSelectedAccountId(
+            data.account.id ||
+              ''
+          );
+
+          setAccountType(
+            data.account.type ||
+              ''
+          );
+
+          accountTypeRef.current =
+            data.account.type ||
+            '';
+
+          setBalance(
+            data.account
+              .balance ??
+              null
+          );
+
+          setCurrency(
+            data.account
+              .currency ||
+              'USD'
+          );
+
+          currencyRef.current =
+            data.account
+              .currency ||
+            'USD';
+
+          autoBotRunningRef.current =
+            false;
+
+          setIsAutoBotRunning(
             false
           );
 
-          closeTradingSocket();
+          proposalPendingRef.current =
+            false;
+
+          buyPendingRef.current =
+            false;
+
+          contractOpenRef.current =
+            false;
+
+          cooldownUntilRef.current =
+            0;
+
+          lifecycleRef.current =
+            createTradeLifecycle();
+
+          requestGuardRef.current =
+            resetRequestGuard();
+
+          recoveryRef.current =
+            clearContractRecovery();
+
+          recoveryBackoffRef.current =
+            resetRecoveryBackoff(
+              recoveryBackoffRef.current
+            );
+
+          proposalFreshnessRef.current =
+            clearProposalFreshness();
+
+          recoveryFetchRunningRef.current =
+            false;
+
+          clearRecoveryTimer();
+
+          syncLifecycleLabel();
+          syncRequestStatus();
+          syncRecoveryLabel();
+          syncRecoveryBackoff();
+
+          setProposalData(
+            null
+          );
+
+          setProposalClock(
+            Date.now()
+          );
+
+          setProposalError('');
+
+          setBuyError('');
+
+          setActiveContract(
+            null
+          );
+
+          setContractProfit(
+            null
+          );
+
+          setContractStatus(
+            'No active contract'
+          );
 
           if (
-            response.status !==
-              401 &&
-            data.error
-          ) {
-            setAuthError(
-              data.error
-            );
-          }
-
-          return;
-        }
-
-        setIsAuthorized(true);
-
-        setAccounts(
-          Array.isArray(
-            data.accounts
-          )
-            ? data.accounts
-            : []
-        );
-
-        if (!data.account) {
-          setAuthError(
-            'No Deriv Options account was found.'
-          );
-
-          return;
-        }
-
-        setAccountId(
-          data.account.id ||
-            ''
-        );
-
-        accountIdRef.current =
-          data.account.id ||
-          '';
-
-        setSelectedAccountId(
-          data.account.id ||
-            ''
-        );
-
-        setAccountType(
-          data.account.type ||
-            ''
-        );
-
-        accountTypeRef.current =
-          data.account.type ||
-          '';
-
-        setBalance(
-          data.account.balance ??
-            null
-        );
-
-        setCurrency(
-          data.account.currency ||
-            'USD'
-        );
-
-        currencyRef.current =
-          data.account.currency ||
-          'USD';
-
-        autoBotRunningRef.current =
-          false;
-
-        setIsAutoBotRunning(
-          false
-        );
-
-        proposalPendingRef.current =
-          false;
-
-        buyPendingRef.current =
-          false;
-
-        contractOpenRef.current =
-          false;
-
-        cooldownUntilRef.current =
-          0;
-
-        lifecycleRef.current =
-          createTradeLifecycle();
-
-        requestGuardRef.current =
-          resetRequestGuard();
-
-        recoveryRef.current =
-          clearContractRecovery();
-
-        proposalFreshnessRef.current =
-          clearProposalFreshness();
-
-        recoveryFetchRunningRef.current =
-          false;
-
-        clearRecoveryTimer();
-
-        syncLifecycleLabel();
-        syncRequestStatus();
-        syncRecoveryLabel();
-
-        setProposalData(null);
-        setProposalClock(
-          Date.now()
-        );
-        setProposalError('');
-
-        setBuyError('');
-
-        setActiveContract(null);
-
-        setContractProfit(null);
-
-        setContractStatus(
-          'No active contract'
-        );
-
-        if (data.wsUrl) {
-          connectTradingSocket(
             data.wsUrl
-          );
-        } else {
-          closeTradingSocket();
-
-          if (data.error) {
-            setAuthError(
-              data.error
+          ) {
+            connectTradingSocket(
+              data.wsUrl
             );
+          } else {
+            closeTradingSocket();
+
+            if (
+              data.error
+            ) {
+              setAuthError(
+                data.error
+              );
+            }
           }
+        } catch (error) {
+          console.error(
+            error
+          );
+
+          setAuthError(
+            'Unable to load your Deriv account.'
+          );
+
+          closeTradingSocket();
+        } finally {
+          setIsLoading(
+            false
+          );
         }
-      } catch (error) {
-        console.error(error);
-
-        setAuthError(
-          'Unable to load your Deriv account.'
-        );
-
-        closeTradingSocket();
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [
-      clearRecoveryTimer,
-      closeTradingSocket,
-      connectTradingSocket,
-      syncLifecycleLabel,
-      syncRequestStatus,
-      syncRecoveryLabel,
-    ]
-  );
+      },
+      [
+        clearRecoveryTimer,
+        closeTradingSocket,
+        connectTradingSocket,
+        syncLifecycleLabel,
+        syncRecoveryBackoff,
+        syncRecoveryLabel,
+        syncRequestStatus,
+      ]
+    );
 
   // ============================================================
   // INITIAL AUTH
@@ -2936,7 +3581,8 @@ export default function BinarySpotPro() {
 
     if (
       derivError ||
-      derivConnected === '1'
+      derivConnected ===
+        '1'
     ) {
       window.history.replaceState(
         {},
@@ -2953,8 +3599,8 @@ export default function BinarySpotPro() {
     };
   }, [
     clearRecoveryTimer,
-    loadDerivSession,
     closeTradingSocket,
+    loadDerivSession,
   ]);
 
   // ============================================================
@@ -2962,7 +3608,9 @@ export default function BinarySpotPro() {
   // ============================================================
 
   const switchAccount =
-    async (newAccountId) => {
+    async (
+      newAccountId
+    ) => {
       if (
         !newAccountId ||
         newAccountId ===
@@ -3030,24 +3678,30 @@ export default function BinarySpotPro() {
 
         ws.send(
           JSON.stringify({
-            ticks: symbol,
-            subscribe: 1,
+            ticks:
+              symbol,
+
+            subscribe:
+              1,
           })
         );
 
         publicPingRef.current =
-          setInterval(() => {
-            if (
-              ws.readyState ===
-              WebSocket.OPEN
-            ) {
-              ws.send(
-                JSON.stringify({
-                  ping: 1,
-                })
-              );
-            }
-          }, 30000);
+          setInterval(
+            () => {
+              if (
+                ws.readyState ===
+                WebSocket.OPEN
+              ) {
+                ws.send(
+                  JSON.stringify({
+                    ping: 1,
+                  })
+                );
+              }
+            },
+            30000
+          );
       };
 
       ws.onmessage = (
@@ -3059,7 +3713,9 @@ export default function BinarySpotPro() {
               event.data
             );
 
-          if (data.error) {
+          if (
+            data.error
+          ) {
             return;
           }
 
@@ -3069,7 +3725,8 @@ export default function BinarySpotPro() {
             data.tick
           ) {
             if (
-              data.subscription?.id
+              data.subscription
+                ?.id
             ) {
               publicSubscriptionRef.current =
                 data.subscription.id;
@@ -3186,14 +3843,16 @@ export default function BinarySpotPro() {
 
       if (ws) {
         try {
-          ws.onclose = null;
+          ws.onclose =
+            null;
+
           ws.close();
         } catch {}
       }
     };
   }, [
-    symbol,
     evaluateAutoEntry,
+    symbol,
   ]);
 
   // ============================================================
@@ -3211,7 +3870,9 @@ export default function BinarySpotPro() {
         predictionDigit,
       });
 
-    setSignal(result);
+    setSignal(
+      result
+    );
   }, [
     strategy,
     predictionDigit,
@@ -3226,20 +3887,26 @@ export default function BinarySpotPro() {
       try {
         setAuthError('');
 
-        setIsConnecting(true);
+        setIsConnecting(
+          true
+        );
 
         const chars =
           'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
 
         const bytes =
-          new Uint8Array(64);
+          new Uint8Array(
+            64
+          );
 
         crypto.getRandomValues(
           bytes
         );
 
         const verifier =
-          Array.from(bytes)
+          Array.from(
+            bytes
+          )
             .map(
               (byte) =>
                 chars[
@@ -3250,9 +3917,10 @@ export default function BinarySpotPro() {
             .join('');
 
         const verifierData =
-          new TextEncoder().encode(
-            verifier
-          );
+          new TextEncoder()
+            .encode(
+              verifier
+            );
 
         const digest =
           await crypto.subtle.digest(
@@ -3268,12 +3936,23 @@ export default function BinarySpotPro() {
               )
             )
           )
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=+$/, '');
+            .replace(
+              /\+/g,
+              '-'
+            )
+            .replace(
+              /\//g,
+              '_'
+            )
+            .replace(
+              /=+$/,
+              ''
+            );
 
         const stateBytes =
-          new Uint8Array(16);
+          new Uint8Array(
+            16
+          );
 
         crypto.getRandomValues(
           stateBytes
@@ -3283,13 +3962,16 @@ export default function BinarySpotPro() {
           Array.from(
             stateBytes
           )
-            .map((byte) =>
-              byte
-                .toString(16)
-                .padStart(
-                  2,
-                  '0'
-                )
+            .map(
+              (byte) =>
+                byte
+                  .toString(
+                    16
+                  )
+                  .padStart(
+                    2,
+                    '0'
+                  )
             )
             .join('');
 
@@ -3347,7 +4029,9 @@ export default function BinarySpotPro() {
           authUrl.toString()
         );
       } catch {
-        setIsConnecting(false);
+        setIsConnecting(
+          false
+        );
 
         setAuthError(
           'Unable to open Deriv authorization.'
@@ -3359,188 +4043,211 @@ export default function BinarySpotPro() {
   // START BOT
   // ============================================================
 
-  const startAutoBot = () => {
-    const recoveryStatus =
-      getContractRecoveryStatus(
-        recoveryRef.current
-      );
+  const startAutoBot =
+    () => {
+      const recoveryStatus =
+        getContractRecoveryStatus(
+          recoveryRef.current
+        );
 
-    if (
-      recoveryStatus.hasContract &&
-      !recoveryStatus.settled
-    ) {
-      setBuyError(
-        'Wait for the active or recovering contract to settle before starting another bot session.'
-      );
+      if (
+        recoveryStatus.hasContract &&
+        !recoveryStatus.settled
+      ) {
+        setBuyError(
+          'Wait for the active or recovering contract to settle before starting another bot session.'
+        );
 
-      return;
-    }
+        return;
+      }
 
-    const requestPermission =
-      canStartNewBotSession(
-        requestGuardRef.current
-      );
+      const requestPermission =
+        canStartNewBotSession(
+          requestGuardRef.current
+        );
 
-    if (
-      !requestPermission.allowed
-    ) {
-      setBuyError(
-        requestPermission.reason
-      );
+      if (
+        !requestPermission.allowed
+      ) {
+        setBuyError(
+          requestPermission.reason
+        );
 
-      return;
-    }
+        return;
+      }
 
-    const validation =
-      validateBotSettings({
-        accountType:
-          accountTypeRef.current,
+      const validation =
+        validateBotSettings({
+          accountType:
+            accountTypeRef.current,
 
-        baseStake,
+          baseStake,
 
-        maxStake,
+          maxStake,
 
-        martingale,
+          martingale,
 
-        takeProfit,
+          takeProfit,
 
-        stopLoss,
+          stopLoss,
 
-        maxTrades,
+          maxTrades,
 
-        maxConsecutiveLosses,
+          maxConsecutiveLosses,
 
-        cooldownSeconds,
+          cooldownSeconds,
 
-        minimumConfidence,
-      });
+          minimumConfidence,
+        });
 
-    if (!validation.valid) {
-      setBuyError(
-        validation.reason
-      );
+      if (
+        !validation.valid
+      ) {
+        setBuyError(
+          validation.reason
+        );
 
-      return;
-    }
+        return;
+      }
 
-    if (
-      emergencyStoppedRef.current
-    ) {
-      setBuyError(
-        'Clear Emergency Stop before starting.'
-      );
+      if (
+        emergencyStoppedRef.current
+      ) {
+        setBuyError(
+          'Clear Emergency Stop before starting.'
+        );
 
-      return;
-    }
+        return;
+      }
 
-    if (
-      !isTradingConnected
-    ) {
-      setBuyError(
-        'Trading socket is not connected.'
-      );
+      if (
+        !isTradingConnected
+      ) {
+        setBuyError(
+          'Trading socket is not connected.'
+        );
 
-      return;
-    }
+        return;
+      }
 
-    if (
-      contractOpenRef.current
-    ) {
-      setBuyError(
-        'Wait for the active contract to settle.'
-      );
+      if (
+        contractOpenRef.current
+      ) {
+        setBuyError(
+          'Wait for the active contract to settle.'
+        );
 
-      return;
-    }
+        return;
+      }
 
-    clearManualProposal();
+      clearManualProposal();
 
-    const startingStake =
-      Number(baseStake);
-
-    setBuyError('');
-    setProposalError('');
-
-    tradeCountRef.current = 0;
-    totalProfitRef.current = 0;
-
-    consecutiveLossesRef.current =
-      0;
-
-    setTradeCount(0);
-
-    setWinCount(0);
-    setLossCount(0);
-    setDrawCount(0);
-
-    setConsecutiveLosses(0);
-
-    setTotalProfit(0);
-
-    setTradeHistory([]);
-
-    currentStakeRef.current =
-      startingStake;
-
-    setCurrentStake(
-      startingStake.toFixed(2)
-    );
-
-    cooldownUntilRef.current =
-      0;
-
-    lifecycleRef.current =
-      createTradeLifecycle();
-
-    recoveryRef.current =
-      clearContractRecovery();
-
-    syncLifecycleLabel();
-    syncRecoveryLabel();
-    syncRequestStatus();
-
-    autoBotRunningRef.current =
-      true;
-
-    setIsAutoBotRunning(true);
-
-    setAutoBotStatus(
-      'Scanning Market'
-    );
-
-    addBotLog(
-      `STABLE SOCKET CALLBACKS ACTIVE — ${strategy}`,
-      'system'
-    );
-
-    const initialSignal =
-      evaluateEntrySignal({
-        strategy,
-
-        digitHistory:
-          digitHistoryRef.current,
-
-        predictionDigit,
-      });
-
-    setSignal(
-      initialSignal
-    );
-
-    if (
-      initialSignal.shouldTrade &&
-      Number(
-        initialSignal.confidence
-      ) >=
+      const startingStake =
         Number(
-          minimumConfidence
+          baseStake
+        );
+
+      setBuyError('');
+      setProposalError('');
+
+      tradeCountRef.current =
+        0;
+
+      totalProfitRef.current =
+        0;
+
+      consecutiveLossesRef.current =
+        0;
+
+      setTradeCount(0);
+      setWinCount(0);
+      setLossCount(0);
+      setDrawCount(0);
+
+      setConsecutiveLosses(
+        0
+      );
+
+      setTotalProfit(
+        0
+      );
+
+      setTradeHistory(
+        []
+      );
+
+      currentStakeRef.current =
+        startingStake;
+
+      setCurrentStake(
+        startingStake.toFixed(
+          2
         )
-    ) {
-      requestAutoProposal(
+      );
+
+      cooldownUntilRef.current =
+        0;
+
+      lifecycleRef.current =
+        createTradeLifecycle();
+
+      recoveryRef.current =
+        clearContractRecovery();
+
+      recoveryBackoffRef.current =
+        resetRecoveryBackoff(
+          recoveryBackoffRef.current
+        );
+
+      syncLifecycleLabel();
+      syncRecoveryLabel();
+      syncRecoveryBackoff();
+      syncRequestStatus();
+
+      autoBotRunningRef.current =
+        true;
+
+      setIsAutoBotRunning(
+        true
+      );
+
+      setAutoBotStatus(
+        'Scanning Market'
+      );
+
+      addBotLog(
+        `RECOVERY BACKOFF GUARD ACTIVE — ${strategy}`,
+        'system'
+      );
+
+      const initialSignal =
+        evaluateEntrySignal({
+          strategy,
+
+          digitHistory:
+            digitHistoryRef.current,
+
+          predictionDigit,
+        });
+
+      setSignal(
         initialSignal
       );
-    }
-  };
+
+      if (
+        initialSignal.shouldTrade &&
+        Number(
+          initialSignal.confidence
+        ) >=
+          Number(
+            minimumConfidence
+          )
+      ) {
+        requestAutoProposal(
+          initialSignal
+        );
+      }
+    };
 
   // ============================================================
   // MANUAL PROPOSAL
@@ -3609,14 +4316,17 @@ export default function BinarySpotPro() {
 
         lifecycleRef.current =
           beginTradeLifecycle({
-            mode: 'manual',
+            mode:
+              'manual',
           });
 
         syncLifecycleLabel();
 
         const payload =
           buildProposalPayload(
-            Number(baseStake)
+            Number(
+              baseStake
+            )
           );
 
         const registration =
@@ -3631,7 +4341,9 @@ export default function BinarySpotPro() {
             }
           );
 
-        if (!registration.valid) {
+        if (
+          !registration.valid
+        ) {
           throw new Error(
             registration.reason
           );
@@ -3645,7 +4357,9 @@ export default function BinarySpotPro() {
         proposalPendingRef.current =
           true;
 
-        setProposalLoading(true);
+        setProposalLoading(
+          true
+        );
 
         setProposalError('');
         setBuyError('');
@@ -3671,7 +4385,9 @@ export default function BinarySpotPro() {
         proposalPendingRef.current =
           false;
 
-        setProposalLoading(false);
+        setProposalLoading(
+          false
+        );
 
         clearManualProposal();
 
@@ -3791,7 +4507,9 @@ export default function BinarySpotPro() {
         );
 
       if (
-        !Number.isFinite(price) ||
+        !Number.isFinite(
+          price
+        ) ||
         price <= 0
       ) {
         setBuyError(
@@ -3817,12 +4535,14 @@ export default function BinarySpotPro() {
       }
 
       if (
-        lifecycleRef.current?.mode !==
+        lifecycleRef.current
+          ?.mode !==
         'manual'
       ) {
         lifecycleRef.current =
           beginTradeLifecycle({
-            mode: 'manual',
+            mode:
+              'manual',
           });
 
         syncLifecycleLabel();
@@ -3864,7 +4584,9 @@ export default function BinarySpotPro() {
       buyPendingRef.current =
         true;
 
-      setBuyLoading(true);
+      setBuyLoading(
+        true
+      );
 
       setBuyError('');
 
@@ -3997,33 +4719,55 @@ export default function BinarySpotPro() {
         return;
       }
 
-      tradeCountRef.current = 0;
+      tradeCountRef.current =
+        0;
 
-      totalProfitRef.current = 0;
+      totalProfitRef.current =
+        0;
 
       consecutiveLossesRef.current =
         0;
 
-      setTradeCount(0);
+      setTradeCount(
+        0
+      );
 
-      setWinCount(0);
-      setLossCount(0);
-      setDrawCount(0);
+      setWinCount(
+        0
+      );
 
-      setConsecutiveLosses(0);
+      setLossCount(
+        0
+      );
 
-      setTotalProfit(0);
+      setDrawCount(
+        0
+      );
 
-      setTradeHistory([]);
+      setConsecutiveLosses(
+        0
+      );
+
+      setTotalProfit(
+        0
+      );
+
+      setTradeHistory(
+        []
+      );
 
       const base =
-        Number(baseStake) || 1;
+        Number(
+          baseStake
+        ) || 1;
 
       currentStakeRef.current =
         base;
 
       setCurrentStake(
-        base.toFixed(2)
+        base.toFixed(
+          2
+        )
       );
 
       cooldownUntilRef.current =
@@ -4038,6 +4782,11 @@ export default function BinarySpotPro() {
       recoveryRef.current =
         clearContractRecovery();
 
+      recoveryBackoffRef.current =
+        resetRecoveryBackoff(
+          recoveryBackoffRef.current
+        );
+
       proposalFreshnessRef.current =
         clearProposalFreshness();
 
@@ -4046,10 +4795,15 @@ export default function BinarySpotPro() {
       syncLifecycleLabel();
       syncRequestStatus();
       syncRecoveryLabel();
+      syncRecoveryBackoff();
 
-      setBotLogs([]);
+      setBotLogs(
+        []
+      );
 
-      setProposalData(null);
+      setProposalData(
+        null
+      );
 
       setProposalClock(
         Date.now()
@@ -4059,9 +4813,13 @@ export default function BinarySpotPro() {
 
       setBuyError('');
 
-      setActiveContract(null);
+      setActiveContract(
+        null
+      );
 
-      setContractProfit(null);
+      setContractProfit(
+        null
+      );
 
       setContractStatus(
         'No active contract'
@@ -4082,7 +4840,8 @@ export default function BinarySpotPro() {
     );
 
   const isDemoAccount =
-    accountType === 'demo';
+    accountType ===
+    'demo';
 
   const isContractOpen =
     Boolean(
@@ -4096,13 +4855,19 @@ export default function BinarySpotPro() {
       'DIGITMATCH',
       'DIGITOVER',
       'DIGITUNDER',
-    ].includes(strategy);
+    ].includes(
+      strategy
+    );
 
   const displayQuote =
     formattedTick ||
-    (lastTick !== null
-      ? String(lastTick)
-      : 'Waiting...');
+    (
+      lastTick !== null
+        ? String(
+            lastTick
+          )
+        : 'Waiting...'
+    );
 
   const completedTrades =
     winCount +
@@ -4152,9 +4917,11 @@ export default function BinarySpotPro() {
     );
 
   const precisionLabel =
-    pipSource === 'live'
+    pipSource ===
+    'live'
       ? `Live pip ${pipSize}`
-      : pipSource === 'cache'
+      : pipSource ===
+        'cache'
       ? `Cached pip ${pipSize}`
       : pipCacheStatus.hasCachedPrecision
       ? `Cached pip ${pipCacheStatus.pipSize}`
@@ -4191,7 +4958,9 @@ export default function BinarySpotPro() {
                 }
                 activeLabel="Trading Socket Active"
                 inactiveLabel={
-                  recoveryStatus.needsRecovery
+                  recoveryBackoffUi.exhausted
+                    ? 'Trading Recovery Paused'
+                    : recoveryStatus.needsRecovery
                     ? 'Trading Socket Recovering'
                     : 'Trading Socket Offline'
                 }
@@ -4209,7 +4978,8 @@ export default function BinarySpotPro() {
               className={`font-black ${
                 lastTick !== null &&
                 prevTick !== null &&
-                lastTick >= prevTick
+                lastTick >=
+                  prevTick
                   ? 'text-emerald-400'
                   : 'text-rose-400'
               }`}
@@ -4218,7 +4988,8 @@ export default function BinarySpotPro() {
             </span>
 
             <span className="bg-slate-800 border border-slate-700 px-2 py-1 rounded text-cyan-400 font-black">
-              {lastDigit ?? '-'}
+              {lastDigit ??
+                '-'}
             </span>
           </div>
         </div>
@@ -4272,7 +5043,8 @@ export default function BinarySpotPro() {
                     event
                   ) =>
                     switchAccount(
-                      event.target.value
+                      event.target
+                        .value
                     )
                   }
                   disabled={
@@ -4287,7 +5059,9 @@ export default function BinarySpotPro() {
                   className="bg-[#151d2d] border border-slate-700 rounded-xl px-3 py-2 text-xs"
                 >
                   {accounts.map(
-                    (account) => (
+                    (
+                      account
+                    ) => (
                       <option
                         key={
                           account.id
@@ -4336,20 +5110,26 @@ export default function BinarySpotPro() {
               'overview',
               '🏠 Overview',
             ],
+
             [
               'bots',
               '🤖 Bot Studio',
             ],
+
             [
               'history',
               '📜 History',
             ],
+
             [
               'analyzer',
               '📊 Digit Analyzer',
             ],
           ].map(
-            ([id, label]) => (
+            ([
+              id,
+              label,
+            ]) => (
               <button
                 key={id}
                 type="button"
@@ -4384,21 +5164,22 @@ export default function BinarySpotPro() {
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-[#0f1522] p-8 md:p-12">
               <span className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-400 font-black">
-                Stable Socket Architecture
+                Controlled Recovery Active
               </span>
 
               <h1 className="mt-5 max-w-3xl text-4xl md:text-5xl font-black">
-                Market Changes Without Trading Session Churn.
+                Recovery Without Infinite Retry Loops.
               </h1>
 
               <p className="mt-5 max-w-2xl text-slate-400">
-                Public market subscriptions can now change symbols
-                independently while the authenticated Deriv trading
-                connection remains stable.
+                Active demo contracts remain remembered if the
+                authenticated socket disconnects, while recovery
+                attempts now use capped backoff instead of endlessly
+                retrying every few seconds.
               </p>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
               <StatBox
                 label="Session"
                 value={
@@ -4423,6 +5204,21 @@ export default function BinarySpotPro() {
                 accent={
                   recoveryStatus.needsRecovery ||
                   recoveryStatus.recovering
+                    ? 'text-amber-400'
+                    : 'text-emerald-400'
+                }
+              />
+
+              <StatBox
+                label="Recovery Backoff"
+                value={
+                  recoveryBackoffUi.label
+                }
+                accent={
+                  recoveryBackoffUi.exhausted
+                    ? 'text-rose-400'
+                    : recoveryBackoffUi.attempts >
+                      0
                     ? 'text-amber-400'
                     : 'text-emerald-400'
                 }
@@ -4467,15 +5263,17 @@ export default function BinarySpotPro() {
                 </h2>
 
                 <p className="mt-1 text-xs text-slate-400">
-                  Demo automation with stable authenticated socket
-                  callbacks, proposal freshness, precision cache,
-                  request protection and contract recovery.
+                  Demo automation with capped recovery backoff,
+                  stable sockets, proposal freshness, precision
+                  caching and request protection.
                 </p>
               </div>
 
               <span
                 className={`px-3 py-1.5 rounded-full text-xs font-black ${
                   emergencyStopped
+                    ? 'bg-rose-500/20 text-rose-400'
+                    : recoveryBackoffUi.exhausted
                     ? 'bg-rose-500/20 text-rose-400'
                     : recoveryStatus.needsRecovery ||
                       recoveryStatus.recovering
@@ -4485,13 +5283,44 @@ export default function BinarySpotPro() {
                     : 'bg-slate-800 text-slate-400'
                 }`}
               >
-                {recoveryStatus.needsRecovery
+                {recoveryBackoffUi.exhausted
+                  ? 'RECOVERY PAUSED'
+                  : recoveryStatus.needsRecovery
                   ? 'RECOVERY REQUIRED'
                   : recoveryStatus.recovering
                   ? 'RECOVERING CONTRACT'
                   : sessionStatus.label}
               </span>
             </div>
+
+            {recoveryBackoffUi.exhausted &&
+              recoveryStatus.hasContract &&
+              !recoveryStatus.settled && (
+                <div className="border border-rose-700/50 bg-rose-950/20 rounded-2xl p-5">
+                  <p className="text-sm font-black text-rose-300">
+                    Automatic contract recovery is paused.
+                  </p>
+
+                  <p className="mt-2 text-xs text-slate-400">
+                    BinarySpot Pro has stopped automatic retries after{' '}
+                    {recoveryBackoffUi.attempts} attempts. The active
+                    contract ID is still remembered.
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={
+                      retryContractRecovery
+                    }
+                    disabled={
+                      recoveryFetchRunningRef.current
+                    }
+                    className="mt-4 w-full py-3 bg-amber-400 disabled:opacity-40 text-black font-black rounded-xl"
+                  >
+                    RETRY RECOVERY
+                  </button>
+                </div>
+              )}
 
             <div
               className={`border rounded-2xl p-5 ${
@@ -4561,7 +5390,8 @@ export default function BinarySpotPro() {
                 <MiniInfo
                   label="Last Digit"
                   value={
-                    lastDigit ?? '-'
+                    lastDigit ??
+                    '-'
                   }
                 />
 
@@ -4710,6 +5540,7 @@ export default function BinarySpotPro() {
                           type="button"
                           onClick={() => {
                             clearManualProposal();
+
                             applySuggestedDigit();
                           }}
                           disabled={
@@ -5082,7 +5913,7 @@ export default function BinarySpotPro() {
                   RESET SESSION
                 </button>
 
-                <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   <StatusCard
                     label="Bot Status"
                     value={
@@ -5115,6 +5946,21 @@ export default function BinarySpotPro() {
                     accent={
                       recoveryStatus.needsRecovery ||
                       recoveryStatus.recovering
+                        ? 'text-amber-400'
+                        : 'text-emerald-400'
+                    }
+                  />
+
+                  <StatusCard
+                    label="Recovery Backoff"
+                    value={
+                      recoveryBackoffUi.label
+                    }
+                    accent={
+                      recoveryBackoffUi.exhausted
+                        ? 'text-rose-400'
+                        : recoveryBackoffUi.attempts >
+                          0
                         ? 'text-amber-400'
                         : 'text-emerald-400'
                     }
@@ -5364,11 +6210,13 @@ export default function BinarySpotPro() {
                   />
 
                   <StatBox
-                    label="Recovery Tries"
-                    value={
-                      recoveryStatus.recoveryAttempts
+                    label="Recovery"
+                    value={`${recoveryBackoffUi.attempts}/${recoveryBackoffUi.maxAttempts}`}
+                    accent={
+                      recoveryBackoffUi.exhausted
+                        ? 'text-rose-400'
+                        : 'text-amber-400'
                     }
-                    accent="text-amber-400"
                   />
                 </div>
 
@@ -5491,9 +6339,11 @@ export default function BinarySpotPro() {
                           2
                         )}`}
                         accent={
-                          trade.profit > 0
+                          trade.profit >
+                          0
                             ? 'text-emerald-400'
-                            : trade.profit < 0
+                            : trade.profit <
+                              0
                             ? 'text-rose-400'
                             : 'text-slate-300'
                         }
@@ -5538,18 +6388,28 @@ export default function BinarySpotPro() {
                 <div className="flex flex-wrap gap-2">
                   <span className="bg-slate-800 px-3 py-1 rounded text-xs font-black text-cyan-400">
                     Even{' '}
-                    {analysis.evenOdd.evenPercentage}
+                    {
+                      analysis
+                        .evenOdd
+                        .evenPercentage
+                    }
                     %
                   </span>
 
                   <span className="bg-slate-800 px-3 py-1 rounded text-xs font-black text-amber-400">
                     Odd{' '}
-                    {analysis.evenOdd.oddPercentage}
+                    {
+                      analysis
+                        .evenOdd
+                        .oddPercentage
+                    }
                     %
                   </span>
 
                   <span className="bg-slate-800 px-3 py-1 rounded text-xs font-black text-emerald-400">
-                    {precisionLabel}
+                    {
+                      precisionLabel
+                    }
                   </span>
                 </div>
               </div>
@@ -5630,7 +6490,8 @@ export default function BinarySpotPro() {
                 <p className="text-xs font-mono text-slate-500">
                   Last digit:{' '}
                   <span className="text-emerald-400 font-black">
-                    {lastDigit ?? '-'}
+                    {lastDigit ??
+                      '-'}
                   </span>
                 </p>
               </div>
@@ -5839,6 +6700,7 @@ function AccountCard({
               {
                 minimumFractionDigits:
                   2,
+
                 maximumFractionDigits:
                   2,
               }
