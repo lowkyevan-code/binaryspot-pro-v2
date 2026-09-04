@@ -1,12 +1,50 @@
 const fs = require('fs');
 const path = require('path');
 
+const projectRoot = __dirname;
+
+const smartChartsPackageRoot = path.join(
+  projectRoot,
+  'node_modules',
+  '@deriv-com',
+  'smartcharts-champion'
+);
+
+const smartChartsDist = path.join(
+  smartChartsPackageRoot,
+  'dist'
+);
+
+const publicRoot = path.join(
+  projectRoot,
+  'public'
+);
+
+const smartChartsPublicRoot = path.join(
+  publicRoot,
+  'smartcharts'
+);
+
+const publicAssetsRoot = path.join(
+  publicRoot,
+  'assets'
+);
+
 function ensureDirectory(directory) {
+  fs.mkdirSync(directory, {
+    recursive: true,
+  });
+}
+
+function removeDirectory(directory) {
   if (!fs.existsSync(directory)) {
-    fs.mkdirSync(directory, {
-      recursive: true,
-    });
+    return;
   }
+
+  fs.rmSync(directory, {
+    recursive: true,
+    force: true,
+  });
 }
 
 function copyDirectory(source, destination) {
@@ -16,57 +54,65 @@ function copyDirectory(source, destination) {
 
   ensureDirectory(destination);
 
-  for (const entry of fs.readdirSync(source, {
-    withFileTypes: true,
-  })) {
-    const sourcePath = path.join(source, entry.name);
-    const destinationPath = path.join(destination, entry.name);
+  const entries = fs.readdirSync(
+    source,
+    {
+      withFileTypes: true,
+    }
+  );
+
+  for (const entry of entries) {
+    const sourcePath = path.join(
+      source,
+      entry.name
+    );
+
+    const destinationPath = path.join(
+      destination,
+      entry.name
+    );
 
     if (entry.isDirectory()) {
-      copyDirectory(sourcePath, destinationPath);
+      copyDirectory(
+        sourcePath,
+        destinationPath
+      );
+
       continue;
     }
 
-    fs.copyFileSync(sourcePath, destinationPath);
+    if (entry.isFile()) {
+      fs.copyFileSync(
+        sourcePath,
+        destinationPath
+      );
+    }
   }
 }
 
-function prepareSmartChartsAssets() {
-  const projectRoot = process.cwd();
-
-  const smartChartsDist = path.join(
-    projectRoot,
-    'node_modules',
-    '@deriv-com',
-    'smartcharts-champion',
-    'dist'
-  );
-
+function prepareSmartChartsRuntime() {
   if (!fs.existsSync(smartChartsDist)) {
     console.warn(
-      '[BinarySpot] SmartCharts package is not installed yet. Skipping asset copy.'
+      '[BinarySpot] @deriv-com/smartcharts-champion/dist was not found.'
     );
+
     return;
   }
 
-  const publicDirectory = path.join(
-    projectRoot,
-    'public'
+  ensureDirectory(publicRoot);
+
+  /*
+   * Remove previously copied SmartCharts runtime
+   * files so an old package version cannot leave
+   * stale chunks behind during a new deployment.
+   */
+  removeDirectory(
+    smartChartsPublicRoot
   );
 
-  const smartChartsPublicDirectory = path.join(
-    publicDirectory,
-    'smartcharts'
+  ensureDirectory(
+    smartChartsPublicRoot
   );
-
-  const rootAssetsDirectory = path.join(
-    publicDirectory,
-    'assets'
-  );
-
-  ensureDirectory(publicDirectory);
-  ensureDirectory(smartChartsPublicDirectory);
-  ensureDirectory(rootAssetsDirectory);
 
   const distEntries = fs.readdirSync(
     smartChartsDist,
@@ -75,16 +121,23 @@ function prepareSmartChartsAssets() {
     }
   );
 
+  let copiedRuntimeFiles = 0;
+
   for (const entry of distEntries) {
     if (!entry.isFile()) {
       continue;
     }
 
+    const fileName = entry.name;
+
     const isSmartChartsChunk =
-      entry.name.includes('.smartcharts.');
+      fileName.includes(
+        '.smartcharts.'
+      );
 
     const isSmartChartsCss =
-      entry.name === 'smartcharts.css';
+      fileName ===
+      'smartcharts.css';
 
     if (
       !isSmartChartsChunk &&
@@ -96,44 +149,59 @@ function prepareSmartChartsAssets() {
     fs.copyFileSync(
       path.join(
         smartChartsDist,
-        entry.name
+        fileName
       ),
       path.join(
-        smartChartsPublicDirectory,
-        entry.name
+        smartChartsPublicRoot,
+        fileName
       )
+    );
+
+    copiedRuntimeFiles += 1;
+  }
+
+  /*
+   * SmartCharts expects chart assets at
+   * /assets/... rather than inside the
+   * /smartcharts chunk directory.
+   */
+  const chartAssetsSource =
+    path.join(
+      smartChartsDist,
+      'chart',
+      'assets'
+    );
+
+  if (
+    fs.existsSync(
+      chartAssetsSource
+    )
+  ) {
+    ensureDirectory(
+      publicAssetsRoot
+    );
+
+    copyDirectory(
+      chartAssetsSource,
+      publicAssetsRoot
+    );
+  } else {
+    console.warn(
+      '[BinarySpot] SmartCharts chart/assets directory was not found.'
     );
   }
 
-  const chartAssetsSource = path.join(
-    smartChartsDist,
-    'chart',
-    'assets'
-  );
-
-  copyDirectory(
-    chartAssetsSource,
-    rootAssetsDirectory
-  );
-
   console.log(
-    '[BinarySpot] SmartCharts runtime assets prepared.'
+    `[BinarySpot] SmartCharts runtime prepared: ${copiedRuntimeFiles} runtime files copied.`
   );
 }
 
-prepareSmartChartsAssets();
+prepareSmartChartsRuntime();
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-
-  transpilePackages: [
-    '@deriv-com/smartcharts-champion',
-  ],
-
-  webpack(config) {
-    return config;
-  },
+  poweredByHeader: false,
 };
 
 module.exports = nextConfig;
