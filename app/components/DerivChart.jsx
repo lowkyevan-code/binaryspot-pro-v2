@@ -2,6 +2,7 @@
 
 import React, {
   Component,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -11,50 +12,15 @@ import React, {
 import createDerivSmartChartsAdapter from '../../lib/derivSmartChartsAdapter';
 
 const DEFAULT_SYMBOL = 'R_100';
-
 const DEFAULT_GRANULARITY = 60;
 
-const GRANULARITIES = [
-  {
-    value: 0,
-    label: 'Ticks',
-  },
-  {
-    value: 60,
-    label: '1m',
-  },
-  {
-    value: 120,
-    label: '2m',
-  },
-  {
-    value: 300,
-    label: '5m',
-  },
-  {
-    value: 900,
-    label: '15m',
-  },
-  {
-    value: 3600,
-    label: '1h',
-  },
-];
-
-function getDisplayName(
-  activeSymbols,
-  symbol
-) {
-  const item = (
-    activeSymbols || []
-  ).find((entry) => {
+function getDisplayName(activeSymbols, symbol) {
+  const item = (activeSymbols || []).find((entry) => {
     const entrySymbol =
       entry?.underlying_symbol ||
       entry?.symbol;
 
-    return (
-      entrySymbol === symbol
-    );
+    return entrySymbol === symbol;
   });
 
   return (
@@ -64,12 +30,8 @@ function getDisplayName(
   );
 }
 
-function mapActiveSymbols(
-  activeSymbols
-) {
-  return (
-    activeSymbols || []
-  )
+function mapActiveSymbols(activeSymbols) {
+  return (activeSymbols || [])
     .map((item) => {
       const symbol =
         item?.underlying_symbol ||
@@ -89,59 +51,28 @@ function mapActiveSymbols(
         item?.underlying_symbol_type ||
         'synthetic_index';
 
-      const marketDisplayName =
-        item?.market_display_name ||
-        item?.market_name ||
-        'Deriv';
-
-      const submarket =
-        item?.submarket ||
-        item?.subgroup ||
-        market;
-
-      const submarketDisplayName =
-        item?.submarket_display_name ||
-        item?.subgroup_display_name ||
-        marketDisplayName;
-
-      const pipSize =
-        Number(
-          item?.pip_size
-        );
-
-      const pip =
-        Number.isFinite(
-          pipSize
-        )
-          ? 10 ** -pipSize
-          : item?.pip ||
-            0.01;
-
       return {
-        ...item,
         symbol,
-        display_name:
-          displayName,
+        display_name: displayName,
         market,
         market_display_name:
-          marketDisplayName,
-        submarket,
+          item?.market_display_name ||
+          'Synthetic Indices',
+        submarket:
+          item?.submarket ||
+          item?.subgroup ||
+          market,
         submarket_display_name:
-          submarketDisplayName,
+          item?.submarket_display_name ||
+          item?.subgroup_display_name ||
+          'Synthetic Indices',
         symbol_type:
           item?.symbol_type ||
           item?.underlying_symbol_type ||
           market,
-        pip,
-        exchange_is_open:
-          item?.exchange_is_open ??
-          1,
-        is_trading_suspended:
-          item?.is_trading_suspended ??
-          0,
-        allow_forward_starting:
-          item?.allow_forward_starting ??
-          0,
+        exchange_is_open: 1,
+        is_trading_suspended: 0,
+        allow_forward_starting: 0,
       };
     })
     .filter(Boolean);
@@ -157,31 +88,24 @@ class ChartErrorBoundary extends Component {
     };
   }
 
-  static getDerivedStateFromError(
-    error
-  ) {
+  static getDerivedStateFromError(error) {
     return {
       hasError: true,
       message:
         error?.message ||
-        'The chart could not be loaded.',
+        'The Deriv chart encountered an error.',
     };
   }
 
-  componentDidCatch(
-    error,
-    info
-  ) {
+  componentDidCatch(error, info) {
     console.error(
-      '[BinarySpot DerivChart] SmartCharts render error:',
+      '[BinarySpot DerivChart] Render error:',
       error,
       info
     );
   }
 
-  componentDidUpdate(
-    previousProps
-  ) {
+  componentDidUpdate(previousProps) {
     if (
       previousProps.resetKey !==
         this.props.resetKey &&
@@ -195,98 +119,31 @@ class ChartErrorBoundary extends Component {
   }
 
   render() {
-    if (
-      this.state.hasError
-    ) {
+    if (this.state.hasError) {
       return (
-        <div
-          style={{
-            minHeight: 360,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent:
-              'center',
-            padding: 24,
-            background:
-              '#080d14',
-          }}
-        >
-          <div
-            style={{
-              maxWidth: 420,
-              textAlign:
-                'center',
-            }}
-          >
-            <div
-              style={{
-                width: 44,
-                height: 44,
-                margin:
-                  '0 auto 14px',
-                borderRadius:
-                  '50%',
-                display: 'grid',
-                placeItems:
-                  'center',
-                background:
-                  'rgba(255, 68, 79, 0.12)',
-                border:
-                  '1px solid rgba(255, 68, 79, 0.35)',
-                color:
-                  '#ff6b74',
-                fontWeight:
-                  900,
-              }}
-            >
+        <div className="flex h-full min-h-[330px] items-center justify-center bg-[#080d14] px-6">
+          <div className="max-w-md text-center">
+            <div className="mx-auto mb-4 grid h-11 w-11 place-items-center rounded-full border border-red-500/30 bg-red-500/10 font-black text-red-400">
               !
             </div>
 
-            <div
-              style={{
-                color:
-                  '#f4f7fb',
-                fontSize: 16,
-                fontWeight:
-                  800,
-              }}
-            >
+            <div className="text-base font-black text-slate-100">
               Chart unavailable
             </div>
 
-            <div
-              style={{
-                marginTop: 8,
-                color:
-                  '#8290a6',
-                fontSize: 13,
-                lineHeight: 1.6,
-              }}
-            >
-              {this.state
-                .message}
+            <div className="mt-2 break-words text-xs leading-6 text-slate-500">
+              {this.state.message}
             </div>
 
-            <div
-              style={{
-                marginTop: 12,
-                color:
-                  '#64748b',
-                fontSize: 12,
-                lineHeight: 1.6,
-              }}
-            >
-              BinarySpot remains
-              available even if
-              the chart fails.
+            <div className="mt-3 text-xs leading-5 text-slate-600">
+              The rest of BinarySpot remains available.
             </div>
           </div>
         </div>
       );
     }
 
-    return this.props
-      .children;
+    return this.props.children;
   }
 }
 
@@ -298,276 +155,273 @@ export default function DerivChart({
   height = 430,
   className = '',
 }) {
-  const adapterRef =
-    useRef(null);
+  const mountedRef = useRef(false);
+  const adapterRef = useRef(null);
+  const loadTimerRef = useRef(null);
 
-  const mountedRef =
-    useRef(true);
+  const [SmartChart, setSmartChart] =
+    useState(null);
 
-  const [
-    SmartChart,
-    setSmartChart,
-  ] = useState(null);
+  const [status, setStatus] =
+    useState('idle');
 
-  const [
-    chartReady,
-    setChartReady,
-  ] = useState(false);
+  const [error, setError] =
+    useState('');
 
-  const [
-    chartError,
-    setChartError,
-  ] = useState('');
+  const [retryKey, setRetryKey] =
+    useState(0);
 
-  const [
-    granularity,
-    setGranularity,
-  ] = useState(
-    DEFAULT_GRANULARITY
+  const normalizedSymbols = useMemo(
+    () => mapActiveSymbols(activeSymbols),
+    [activeSymbols]
   );
 
-  const [
-    chartType,
-    setChartType,
-  ] = useState(
-    'candles'
-  );
-
-  const [
-    reloadKey,
-    setReloadKey,
-  ] = useState(0);
-
-  const normalizedSymbols =
-    useMemo(
-      () =>
-        mapActiveSymbols(
-          activeSymbols
-        ),
-      [activeSymbols]
-    );
-
-  const displayName =
-    useMemo(
-      () =>
-        getDisplayName(
-          activeSymbols,
-          symbol
-        ),
-      [
+  const displayName = useMemo(
+    () =>
+      getDisplayName(
         activeSymbols,
-        symbol,
-      ]
-    );
+        symbol
+      ),
+    [activeSymbols, symbol]
+  );
 
   useEffect(() => {
-    mountedRef.current =
-      true;
+    mountedRef.current = true;
 
     return () => {
-      mountedRef.current =
-        false;
+      mountedRef.current = false;
+
+      if (loadTimerRef.current) {
+        window.clearTimeout(
+          loadTimerRef.current
+        );
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    adapterRef.current =
+      createDerivSmartChartsAdapter();
+
+    return () => {
+      adapterRef.current?.destroy?.();
+      adapterRef.current = null;
     };
   }, []);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function loadSmartCharts() {
-      setChartReady(false);
-      setChartError('');
+    setSmartChart(null);
+    setError('');
+    setStatus('waiting');
 
-      try {
-        const module =
-          await import(
-            '@deriv-com/smartcharts-champion'
-          );
+    loadTimerRef.current =
+      window.setTimeout(
+        async () => {
+          if (
+            cancelled ||
+            !mountedRef.current
+          ) {
+            return;
+          }
 
-        if (
-          cancelled ||
-          !mountedRef.current
-        ) {
-          return;
-        }
+          setStatus('loading');
 
-        if (
-          typeof module
-            .setSmartChartsPublicPath ===
-          'function'
-        ) {
-          module.setSmartChartsPublicPath(
-            '/smartcharts/'
-          );
-        }
+          try {
+            const module =
+              await import(
+                '@deriv-com/smartcharts-champion'
+              );
 
-        if (
-          !module.SmartChart
-        ) {
-          throw new Error(
-            'SmartChart export was not found.'
-          );
-        }
+            if (
+              cancelled ||
+              !mountedRef.current
+            ) {
+              return;
+            }
 
-        setSmartChart(
-          () =>
-            module.SmartChart
-        );
+            if (
+              typeof module.setSmartChartsPublicPath ===
+              'function'
+            ) {
+              module.setSmartChartsPublicPath(
+                '/smartcharts/'
+              );
+            }
 
-        setChartReady(true);
-      } catch (error) {
-        console.error(
-          '[BinarySpot DerivChart] SmartCharts import failed:',
-          error
-        );
+            if (
+              typeof module.SmartChart !==
+              'function'
+            ) {
+              throw new Error(
+                'SmartChart export was not found.'
+              );
+            }
 
-        if (
-          !cancelled &&
-          mountedRef.current
-        ) {
-          setSmartChart(null);
+            setSmartChart(
+              () => module.SmartChart
+            );
 
-          setChartReady(false);
+            setStatus('ready');
+          } catch (loadError) {
+            console.error(
+              '[BinarySpot DerivChart] SmartCharts loading failed:',
+              loadError
+            );
 
-          setChartError(
-            error?.message ||
-              'Unable to load Deriv SmartCharts.'
-          );
-        }
-      }
-    }
+            if (
+              !cancelled &&
+              mountedRef.current
+            ) {
+              setStatus('error');
 
-    loadSmartCharts();
+              setError(
+                loadError?.message ||
+                  'Unable to load Deriv SmartCharts.'
+              );
+            }
+          }
+        },
+        350
+      );
 
     return () => {
       cancelled = true;
+
+      if (loadTimerRef.current) {
+        window.clearTimeout(
+          loadTimerRef.current
+        );
+
+        loadTimerRef.current = null;
+      }
     };
-  }, [reloadKey]);
+  }, [retryKey]);
 
-  useEffect(() => {
-    if (
-      adapterRef.current
-    ) {
-      return;
-    }
+  const getQuotes = useCallback(
+    async (request) => {
+      const adapter =
+        adapterRef.current;
 
-    adapterRef.current =
-      createDerivSmartChartsAdapter();
+      if (!adapter) {
+        return {
+          quotes: [],
+          meta: {
+            symbol:
+              request?.symbol ||
+              symbol,
+            granularity:
+              request?.granularity ??
+              DEFAULT_GRANULARITY,
+          },
+        };
+      }
 
-    return () => {
-      adapterRef.current?.destroy?.();
-
-      adapterRef.current =
-        null;
-    };
-  }, []);
-
-  const getQuotes =
-    useMemo(
-      () =>
-        async (
+      try {
+        return await adapter.getQuotes(
           request
-        ) => {
-          if (
-            !adapterRef.current
-          ) {
-            return {
-              quotes: [],
-              meta: {
-                symbol:
-                  request?.symbol ||
-                  symbol,
-                granularity:
-                  request
-                    ?.granularity ??
-                  granularity,
-              },
-            };
-          }
+        );
+      } catch (requestError) {
+        console.error(
+          '[BinarySpot DerivChart] getQuotes failed:',
+          requestError
+        );
 
-          return adapterRef.current.getQuotes(
-            request
-          );
-        },
-      [
-        symbol,
-        granularity,
-      ]
-    );
+        return {
+          quotes: [],
+          meta: {
+            symbol:
+              request?.symbol ||
+              symbol,
+            granularity:
+              request?.granularity ??
+              DEFAULT_GRANULARITY,
+          },
+        };
+      }
+    },
+    [symbol]
+  );
 
   const subscribeQuotes =
-    useMemo(
-      () =>
-        (
-          request,
-          callback
-        ) => {
-          if (
-            !adapterRef.current
-          ) {
-            return () => {};
-          }
+    useCallback(
+      (request, callback) => {
+        const adapter =
+          adapterRef.current;
 
-          return adapterRef.current.subscribeQuotes(
+        if (!adapter) {
+          return () => {};
+        }
+
+        try {
+          return adapter.subscribeQuotes(
             request,
             callback
           );
-        },
+        } catch (subscriptionError) {
+          console.error(
+            '[BinarySpot DerivChart] subscribeQuotes failed:',
+            subscriptionError
+          );
+
+          return () => {};
+        }
+      },
       []
     );
 
   const unsubscribeQuotes =
-    useMemo(
-      () =>
-        (request) => {
-          adapterRef.current?.unsubscribeQuotes?.(
-            request
+    useCallback(
+      (request) => {
+        try {
+          adapterRef.current
+            ?.unsubscribeQuotes?.(
+              request
+            );
+        } catch (unsubscribeError) {
+          console.error(
+            '[BinarySpot DerivChart] unsubscribeQuotes failed:',
+            unsubscribeError
           );
-        },
+        }
+      },
       []
     );
 
   const numericQuote =
     Number(quote);
 
+  const decimals =
+    Number.isFinite(
+      Number(pipSize)
+    )
+      ? Number(pipSize)
+      : 2;
+
   const formattedQuote =
     Number.isFinite(
       numericQuote
     )
       ? numericQuote.toFixed(
-          Number.isFinite(
-            Number(pipSize)
-          )
-            ? Number(
-                pipSize
-              )
-            : 2
+          decimals
         )
       : '—';
 
-  const handleRetry = () => {
-    setChartError('');
-    setSmartChart(null);
-    setChartReady(false);
+  const chartHeight = Math.max(
+    Number(height) || 430,
+    330
+  );
 
-    setReloadKey(
-      (value) =>
-        value + 1
+  const retry = () => {
+    setError('');
+    setStatus('idle');
+    setSmartChart(null);
+
+    setRetryKey(
+      (value) => value + 1
     );
   };
-
-  const chartHeight =
-    Math.max(
-      Number(height) ||
-        430,
-      300
-    );
-
-  const chartKey = [
-    symbol,
-    granularity,
-    chartType,
-    reloadKey,
-  ].join('-');
 
   return (
     <>
@@ -577,40 +431,34 @@ export default function DerivChart({
       />
 
       <section
-        className={
-          className
-        }
+        className={className}
         style={{
           width: '100%',
-          overflow:
-            'hidden',
-          borderRadius:
-            18,
+          overflow: 'hidden',
+          borderRadius: 18,
           border:
             '1px solid #1d2a3d',
           background:
             '#080d14',
-          boxShadow:
-            '0 18px 50px rgba(0, 0, 0, 0.22)',
         }}
       >
         <div
           style={{
-            minHeight: 66,
+            minHeight: 64,
+            padding:
+              '12px 14px',
             display: 'flex',
             alignItems:
               'center',
             justifyContent:
               'space-between',
-            gap: 14,
-            padding:
-              '12px 14px',
-            borderBottom:
-              '1px solid #172235',
-            background:
-              '#0c131f',
+            gap: 12,
             flexWrap:
               'wrap',
+            background:
+              '#0c131f',
+            borderBottom:
+              '1px solid #172235',
           }}
         >
           <div
@@ -626,13 +474,12 @@ export default function DerivChart({
               style={{
                 width: 36,
                 height: 36,
-                flex:
-                  '0 0 auto',
-                borderRadius:
-                  10,
+                flex: '0 0 auto',
                 display: 'grid',
                 placeItems:
                   'center',
+                borderRadius:
+                  10,
                 background:
                   '#111d2d',
                 border:
@@ -641,7 +488,6 @@ export default function DerivChart({
                   '#ff4758',
                 fontWeight:
                   900,
-                fontSize: 17,
               }}
             >
               ∿
@@ -654,17 +500,17 @@ export default function DerivChart({
             >
               <div
                 style={{
-                  color:
-                    '#f8fafc',
-                  fontSize: 14,
-                  fontWeight:
-                    800,
                   overflow:
                     'hidden',
                   textOverflow:
                     'ellipsis',
                   whiteSpace:
                     'nowrap',
+                  color:
+                    '#f8fafc',
+                  fontSize: 14,
+                  fontWeight:
+                    900,
                 }}
               >
                 {displayName}
@@ -673,8 +519,7 @@ export default function DerivChart({
               <div
                 style={{
                   marginTop: 3,
-                  display:
-                    'flex',
+                  display: 'flex',
                   alignItems:
                     'center',
                   gap: 7,
@@ -693,16 +538,12 @@ export default function DerivChart({
                       '50%',
                     background:
                       '#22d3a5',
-                    boxShadow:
-                      '0 0 10px rgba(34, 211, 165, 0.75)',
                   }}
                 />
 
                 LIVE
 
-                <span>
-                  •
-                </span>
+                <span>•</span>
 
                 {symbol}
               </div>
@@ -711,144 +552,24 @@ export default function DerivChart({
 
           <div
             style={{
-              display: 'flex',
-              alignItems:
-                'center',
-              gap: 8,
-              flexWrap:
-                'wrap',
+              padding:
+                '7px 11px',
+              borderRadius:
+                9,
+              border:
+                '1px solid #1e2b3f',
+              background:
+                '#070c13',
+              color:
+                '#e8edf5',
+              fontSize: 13,
+              fontWeight:
+                900,
+              fontVariantNumeric:
+                'tabular-nums',
             }}
           >
-            <div
-              style={{
-                padding:
-                  '7px 10px',
-                borderRadius:
-                  9,
-                background:
-                  '#070c13',
-                border:
-                  '1px solid #1e2b3f',
-                color:
-                  '#e8edf5',
-                fontSize: 13,
-                fontWeight:
-                  800,
-                fontVariantNumeric:
-                  'tabular-nums',
-              }}
-            >
-              {formattedQuote}
-            </div>
-
-            <select
-              value={
-                granularity
-              }
-              onChange={(
-                event
-              ) => {
-                const next =
-                  Number(
-                    event
-                      .target
-                      .value
-                  );
-
-                setGranularity(
-                  next
-                );
-
-                if (
-                  next === 0
-                ) {
-                  setChartType(
-                    'line'
-                  );
-                }
-              }}
-              style={{
-                height: 34,
-                padding:
-                  '0 9px',
-                borderRadius:
-                  9,
-                border:
-                  '1px solid #26364e',
-                background:
-                  '#111b29',
-                color:
-                  '#e8edf5',
-                fontWeight:
-                  800,
-                outline:
-                  'none',
-              }}
-            >
-              {GRANULARITIES.map(
-                (item) => (
-                  <option
-                    key={
-                      item.value
-                    }
-                    value={
-                      item.value
-                    }
-                  >
-                    {
-                      item.label
-                    }
-                  </option>
-                )
-              )}
-            </select>
-
-            <select
-              value={
-                chartType
-              }
-              disabled={
-                granularity ===
-                0
-              }
-              onChange={(
-                event
-              ) =>
-                setChartType(
-                  event
-                    .target
-                    .value
-                )
-              }
-              style={{
-                height: 34,
-                padding:
-                  '0 9px',
-                borderRadius:
-                  9,
-                border:
-                  '1px solid #26364e',
-                background:
-                  '#111b29',
-                color:
-                  granularity ===
-                  0
-                    ? '#536176'
-                    : '#e8edf5',
-                fontWeight:
-                  800,
-                outline:
-                  'none',
-              }}
-            >
-              <option value="candles">
-                Candles
-              </option>
-
-              <option value="line">
-                Line
-              </option>
-            </select>
+            {formattedQuote}
           </div>
         </div>
 
@@ -859,23 +580,25 @@ export default function DerivChart({
             width: '100%',
             height:
               chartHeight,
-            minHeight: 300,
+            minHeight: 330,
             background:
               '#080d14',
           }}
         >
-          {!chartReady &&
-            !chartError && (
+          {status !==
+            'ready' &&
+            status !==
+              'error' && (
               <div
                 style={{
                   position:
                     'absolute',
                   inset: 0,
+                  zIndex: 5,
                   display:
                     'grid',
                   placeItems:
                     'center',
-                  zIndex: 2,
                   background:
                     '#080d14',
                 }}
@@ -888,14 +611,14 @@ export default function DerivChart({
                 >
                   <div
                     style={{
-                      width: 30,
-                      height: 30,
+                      width: 28,
+                      height: 28,
                       margin:
                         '0 auto 12px',
                       borderRadius:
                         '50%',
                       border:
-                        '3px solid #253248',
+                        '3px solid #243248',
                       borderTopColor:
                         '#ff4758',
                       animation:
@@ -906,129 +629,118 @@ export default function DerivChart({
                   <div
                     style={{
                       color:
-                        '#a3afc2',
-                      fontSize:
-                        13,
+                        '#9aa8bb',
+                      fontSize: 13,
                       fontWeight:
-                        700,
+                        800,
                     }}
                   >
-                    Loading Deriv
+                    Preparing Deriv
                     chart…
                   </div>
                 </div>
               </div>
             )}
 
-          {chartError && (
-            <div
-              style={{
-                position:
-                  'absolute',
-                inset: 0,
-                zIndex: 3,
-                display:
-                  'grid',
-                placeItems:
-                  'center',
-                padding: 22,
-                background:
-                  '#080d14',
-              }}
-            >
+          {status ===
+            'error' && (
               <div
                 style={{
-                  maxWidth:
-                    430,
-                  textAlign:
+                  position:
+                    'absolute',
+                  inset: 0,
+                  zIndex: 6,
+                  display:
+                    'grid',
+                  placeItems:
                     'center',
+                  padding: 22,
+                  background:
+                    '#080d14',
                 }}
               >
                 <div
                   style={{
-                    color:
-                      '#f8fafc',
-                    fontSize:
-                      16,
-                    fontWeight:
-                      900,
+                    maxWidth:
+                      430,
+                    textAlign:
+                      'center',
                   }}
                 >
-                  Deriv chart
-                  couldn't load
-                </div>
+                  <div
+                    style={{
+                      color:
+                        '#f8fafc',
+                      fontSize: 16,
+                      fontWeight:
+                        900,
+                    }}
+                  >
+                    Deriv chart
+                    couldn't load
+                  </div>
 
-                <div
-                  style={{
-                    marginTop: 8,
-                    color:
-                      '#7f8da3',
-                    fontSize:
-                      12,
-                    lineHeight:
-                      1.6,
-                    wordBreak:
-                      'break-word',
-                  }}
-                >
-                  {chartError}
-                </div>
+                  <div
+                    style={{
+                      marginTop: 8,
+                      color:
+                        '#7f8da3',
+                      fontSize: 12,
+                      lineHeight:
+                        1.6,
+                    }}
+                  >
+                    {error}
+                  </div>
 
-                <button
-                  type="button"
-                  onClick={
-                    handleRetry
-                  }
-                  style={{
-                    marginTop:
-                      16,
-                    minHeight:
-                      38,
-                    padding:
-                      '0 16px',
-                    border: 0,
-                    borderRadius:
-                      9,
-                    background:
-                      '#ff4758',
-                    color:
-                      '#ffffff',
-                    fontWeight:
-                      900,
-                    cursor:
-                      'pointer',
-                  }}
-                >
-                  Retry chart
-                </button>
+                  <button
+                    type="button"
+                    onClick={retry}
+                    style={{
+                      marginTop:
+                        16,
+                      minHeight:
+                        38,
+                      padding:
+                        '0 16px',
+                      border: 0,
+                      borderRadius:
+                        9,
+                      background:
+                        '#ff4758',
+                      color:
+                        '#fff',
+                      fontWeight:
+                        900,
+                    }}
+                  >
+                    Retry chart
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {chartReady &&
-            SmartChart &&
-            !chartError && (
+          {status ===
+            'ready' &&
+            SmartChart && (
               <ChartErrorBoundary
-                resetKey={
-                  chartKey
-                }
+                resetKey={`${symbol}-${retryKey}`}
               >
                 <SmartChart
-                  key={
-                    chartKey
-                  }
-                  id={`binaryspot-chart-${symbol}`}
-                  symbol={
-                    symbol
-                  }
+                  id="binaryspot-main-chart"
+                  symbol={symbol}
                   granularity={
-                    granularity
+                    DEFAULT_GRANULARITY
                   }
-                  chartType={
-                    granularity ===
-                    0
-                      ? 'line'
-                      : chartType
+                  chartType="candle"
+                  getQuotes={
+                    getQuotes
+                  }
+                  subscribeQuotes={
+                    subscribeQuotes
+                  }
+                  unsubscribeQuotes={
+                    unsubscribeQuotes
                   }
                   chartData={{
                     activeSymbols:
@@ -1040,32 +752,16 @@ export default function DerivChart({
                     tradingTimes:
                       false,
                   }}
-                  getQuotes={
-                    getQuotes
-                  }
-                  subscribeQuotes={
-                    subscribeQuotes
-                  }
-                  unsubscribeQuotes={
-                    unsubscribeQuotes
-                  }
                   shouldFetchTradingTimes={
                     false
                   }
-                  isMobile={
-                    typeof window !==
-                      'undefined'
-                      ? window
-                          .innerWidth <
-                        768
-                      : false
+                  isAnimationEnabled={
+                    false
                   }
-                  settings={{
-                    language:
-                      'en',
-                    theme:
-                      'dark',
-                  }}
+                  enabledNavigationWidget={
+                    false
+                  }
+                  isLive
                 />
               </ChartErrorBoundary>
             )}
@@ -1073,15 +769,15 @@ export default function DerivChart({
 
         <div
           style={{
-            minHeight: 38,
+            minHeight: 36,
+            padding:
+              '7px 13px',
             display: 'flex',
             alignItems:
               'center',
             justifyContent:
               'space-between',
-            gap: 12,
-            padding:
-              '7px 13px',
+            gap: 10,
             borderTop:
               '1px solid #172235',
             background:
@@ -1090,7 +786,7 @@ export default function DerivChart({
               '#64748b',
             fontSize: 10,
             fontWeight:
-              700,
+              800,
           }}
         >
           <span>
@@ -1098,10 +794,7 @@ export default function DerivChart({
           </span>
 
           <span>
-            {granularity ===
-            0
-              ? 'TICK STREAM'
-              : `${granularity / 60} MIN`}
+            1 MIN • CANDLES
           </span>
         </div>
 
