@@ -1,21 +1,21 @@
 'use client';
 
 import React, {
-  Component,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
 
-import createDerivSmartChartsAdapter from '../../lib/derivSmartChartsAdapter';
-
 const DEFAULT_SYMBOL = 'R_100';
-const DEFAULT_GRANULARITY = 60;
 
-function getDisplayName(activeSymbols, symbol) {
-  const item = (activeSymbols || []).find((entry) => {
+function getDisplayName(
+  activeSymbols,
+  symbol
+) {
+  const item = (
+    activeSymbols || []
+  ).find((entry) => {
     const entrySymbol =
       entry?.underlying_symbol ||
       entry?.symbol;
@@ -30,121 +30,194 @@ function getDisplayName(activeSymbols, symbol) {
   );
 }
 
-function mapActiveSymbols(activeSymbols) {
-  return (activeSymbols || [])
-    .map((item) => {
-      const symbol =
-        item?.underlying_symbol ||
-        item?.symbol;
+function normalizePoint(
+  item,
+  index
+) {
+  if (item === null || item === undefined) {
+    return null;
+  }
 
-      if (!symbol) {
-        return null;
-      }
+  if (
+    typeof item === 'number'
+  ) {
+    return {
+      quote: item,
+      epoch:
+        Date.now() / 1000 +
+        index,
+    };
+  }
 
-      const displayName =
-        item?.underlying_symbol_name ||
-        item?.display_name ||
-        symbol;
+  const quote = Number(
+    item?.quote ??
+      item?.price ??
+      item?.Close ??
+      item?.close
+  );
 
-      const market =
-        item?.market ||
-        item?.underlying_symbol_type ||
-        'synthetic_index';
+  if (!Number.isFinite(quote)) {
+    return null;
+  }
 
-      return {
-        symbol,
-        display_name: displayName,
-        market,
-        market_display_name:
-          item?.market_display_name ||
-          'Synthetic Indices',
-        submarket:
-          item?.submarket ||
-          item?.subgroup ||
-          market,
-        submarket_display_name:
-          item?.submarket_display_name ||
-          item?.subgroup_display_name ||
-          'Synthetic Indices',
-        symbol_type:
-          item?.symbol_type ||
-          item?.underlying_symbol_type ||
-          market,
-        exchange_is_open: 1,
-        is_trading_suspended: 0,
-        allow_forward_starting: 0,
-      };
-    })
-    .filter(Boolean);
+  const epoch = Number(
+    item?.epoch ??
+      item?.time ??
+      item?.timestamp ??
+      Date.now() / 1000 +
+        index
+  );
+
+  return {
+    quote,
+    epoch:
+      Number.isFinite(epoch)
+        ? epoch
+        : Date.now() / 1000 +
+          index,
+  };
 }
 
-class ChartErrorBoundary extends Component {
-  constructor(props) {
-    super(props);
+function formatPrice(
+  value,
+  pipSize
+) {
+  const number =
+    Number(value);
 
-    this.state = {
-      hasError: false,
-      message: '',
-    };
+  if (!Number.isFinite(number)) {
+    return '—';
   }
 
-  static getDerivedStateFromError(error) {
+  const decimals =
+    Number.isFinite(
+      Number(pipSize)
+    )
+      ? Number(pipSize)
+      : 2;
+
+  return number.toFixed(
+    decimals
+  );
+}
+
+function buildPath(
+  points,
+  width,
+  height,
+  padding
+) {
+  if (
+    !Array.isArray(points) ||
+    points.length < 2
+  ) {
     return {
-      hasError: true,
-      message:
-        error?.message ||
-        'The Deriv chart encountered an error.',
+      path: '',
+      min: null,
+      max: null,
     };
   }
 
-  componentDidCatch(error, info) {
-    console.error(
-      '[BinarySpot DerivChart] Render error:',
-      error,
-      info
+  const values =
+    points.map(
+      (point) =>
+        point.quote
     );
+
+  let min =
+    Math.min(
+      ...values
+    );
+
+  let max =
+    Math.max(
+      ...values
+    );
+
+  if (
+    !Number.isFinite(min) ||
+    !Number.isFinite(max)
+  ) {
+    return {
+      path: '',
+      min: null,
+      max: null,
+    };
   }
 
-  componentDidUpdate(previousProps) {
-    if (
-      previousProps.resetKey !==
-        this.props.resetKey &&
-      this.state.hasError
-    ) {
-      this.setState({
-        hasError: false,
-        message: '',
-      });
-    }
+  if (min === max) {
+    min -= 1;
+    max += 1;
   }
 
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="flex h-full min-h-[330px] items-center justify-center bg-[#080d14] px-6">
-          <div className="max-w-md text-center">
-            <div className="mx-auto mb-4 grid h-11 w-11 place-items-center rounded-full border border-red-500/30 bg-red-500/10 font-black text-red-400">
-              !
-            </div>
+  const usableWidth =
+    width -
+    padding * 2;
 
-            <div className="text-base font-black text-slate-100">
-              Chart unavailable
-            </div>
+  const usableHeight =
+    height -
+    padding * 2;
 
-            <div className="mt-2 break-words text-xs leading-6 text-slate-500">
-              {this.state.message}
-            </div>
+  const priceRange =
+    max - min;
 
-            <div className="mt-3 text-xs leading-5 text-slate-600">
-              The rest of BinarySpot remains available.
-            </div>
-          </div>
-        </div>
-      );
-    }
+  const lastIndex =
+    points.length - 1;
 
-    return this.props.children;
-  }
+  const coords =
+    points.map(
+      (point, index) => {
+        const x =
+          padding +
+          (
+            index /
+            lastIndex
+          ) *
+            usableWidth;
+
+        const normalized =
+          (
+            point.quote -
+            min
+          ) /
+          priceRange;
+
+        const y =
+          padding +
+          (
+            1 -
+            normalized
+          ) *
+            usableHeight;
+
+        return {
+          x,
+          y,
+        };
+      }
+    );
+
+  const path =
+    coords
+      .map(
+        (coord, index) =>
+          `${
+            index === 0
+              ? 'M'
+              : 'L'
+          } ${coord.x.toFixed(
+            2
+          )} ${coord.y.toFixed(
+            2
+          )}`
+      )
+      .join(' ');
+
+  return {
+    path,
+    min,
+    max,
+  };
 }
 
 export default function DerivChart({
@@ -154,668 +227,588 @@ export default function DerivChart({
   pipSize = null,
   height = 430,
   className = '',
+  tickHistory = [],
 }) {
-  const mountedRef = useRef(false);
-  const adapterRef = useRef(null);
-  const loadTimerRef = useRef(null);
+  const containerRef =
+    useRef(null);
 
-  const [SmartChart, setSmartChart] =
-    useState(null);
+  const [
+    size,
+    setSize,
+  ] = useState({
+    width: 720,
+    height: 430,
+  });
 
-  const [status, setStatus] =
-    useState('idle');
+  const [
+    localPoints,
+    setLocalPoints,
+  ] = useState([]);
 
-  const [error, setError] =
-    useState('');
-
-  const [retryKey, setRetryKey] =
-    useState(0);
-
-  const normalizedSymbols = useMemo(
-    () => mapActiveSymbols(activeSymbols),
-    [activeSymbols]
-  );
-
-  const displayName = useMemo(
-    () =>
-      getDisplayName(
+  const displayName =
+    useMemo(
+      () =>
+        getDisplayName(
+          activeSymbols,
+          symbol
+        ),
+      [
         activeSymbols,
-        symbol
-      ),
-    [activeSymbols, symbol]
-  );
+        symbol,
+      ]
+    );
 
   useEffect(() => {
-    mountedRef.current = true;
+    const element =
+      containerRef.current;
 
-    return () => {
-      mountedRef.current = false;
+    if (!element) {
+      return;
+    }
 
-      if (loadTimerRef.current) {
-        window.clearTimeout(
-          loadTimerRef.current
-        );
-      }
-    };
-  }, []);
+    const updateSize =
+      () => {
+        const rect =
+          element.getBoundingClientRect();
 
-  useEffect(() => {
-    adapterRef.current =
-      createDerivSmartChartsAdapter();
+        setSize({
+          width:
+            Math.max(
+              rect.width,
+              280
+            ),
+          height:
+            Math.max(
+              Number(height) ||
+                430,
+              320
+            ),
+        });
+      };
 
-    return () => {
-      adapterRef.current?.destroy?.();
-      adapterRef.current = null;
-    };
-  }, []);
+    updateSize();
 
-  useEffect(() => {
-    let cancelled = false;
-
-    setSmartChart(null);
-    setError('');
-    setStatus('waiting');
-
-    loadTimerRef.current =
-      window.setTimeout(
-        async () => {
-          if (
-            cancelled ||
-            !mountedRef.current
-          ) {
-            return;
-          }
-
-          setStatus('loading');
-
-          try {
-            const module =
-              await import(
-                '@deriv-com/smartcharts-champion'
-              );
-
-            if (
-              cancelled ||
-              !mountedRef.current
-            ) {
-              return;
-            }
-
-            if (
-              typeof module.setSmartChartsPublicPath ===
-              'function'
-            ) {
-              module.setSmartChartsPublicPath(
-                '/smartcharts/'
-              );
-            }
-
-            if (
-              typeof module.SmartChart !==
-              'function'
-            ) {
-              throw new Error(
-                'SmartChart export was not found.'
-              );
-            }
-
-            setSmartChart(
-              () => module.SmartChart
-            );
-
-            setStatus('ready');
-          } catch (loadError) {
-            console.error(
-              '[BinarySpot DerivChart] SmartCharts loading failed:',
-              loadError
-            );
-
-            if (
-              !cancelled &&
-              mountedRef.current
-            ) {
-              setStatus('error');
-
-              setError(
-                loadError?.message ||
-                  'Unable to load Deriv SmartCharts.'
-              );
-            }
-          }
-        },
-        350
+    const observer =
+      new ResizeObserver(
+        updateSize
       );
 
+    observer.observe(
+      element
+    );
+
     return () => {
-      cancelled = true;
-
-      if (loadTimerRef.current) {
-        window.clearTimeout(
-          loadTimerRef.current
-        );
-
-        loadTimerRef.current = null;
-      }
+      observer.disconnect();
     };
-  }, [retryKey]);
+  }, [height]);
 
-  const getQuotes = useCallback(
-    async (request) => {
-      const adapter =
-        adapterRef.current;
-
-      if (!adapter) {
-        return {
-          quotes: [],
-          meta: {
-            symbol:
-              request?.symbol ||
-              symbol,
-            granularity:
-              request?.granularity ??
-              DEFAULT_GRANULARITY,
-          },
-        };
-      }
-
-      try {
-        return await adapter.getQuotes(
-          request
-        );
-      } catch (requestError) {
-        console.error(
-          '[BinarySpot DerivChart] getQuotes failed:',
-          requestError
-        );
-
-        return {
-          quotes: [],
-          meta: {
-            symbol:
-              request?.symbol ||
-              symbol,
-            granularity:
-              request?.granularity ??
-              DEFAULT_GRANULARITY,
-          },
-        };
-      }
-    },
-    [symbol]
-  );
-
-  const subscribeQuotes =
-    useCallback(
-      (request, callback) => {
-        const adapter =
-          adapterRef.current;
-
-        if (!adapter) {
-          return () => {};
-        }
-
-        try {
-          return adapter.subscribeQuotes(
-            request,
-            callback
-          );
-        } catch (subscriptionError) {
-          console.error(
-            '[BinarySpot DerivChart] subscribeQuotes failed:',
-            subscriptionError
-          );
-
-          return () => {};
-        }
-      },
-      []
-    );
-
-  const unsubscribeQuotes =
-    useCallback(
-      (request) => {
-        try {
-          adapterRef.current
-            ?.unsubscribeQuotes?.(
-              request
-            );
-        } catch (unsubscribeError) {
-          console.error(
-            '[BinarySpot DerivChart] unsubscribeQuotes failed:',
-            unsubscribeError
-          );
-        }
-      },
-      []
-    );
-
-  const numericQuote =
-    Number(quote);
-
-  const decimals =
-    Number.isFinite(
-      Number(pipSize)
-    )
-      ? Number(pipSize)
-      : 2;
-
-  const formattedQuote =
-    Number.isFinite(
-      numericQuote
-    )
-      ? numericQuote.toFixed(
-          decimals
+  useEffect(() => {
+    const normalized =
+      (
+        tickHistory ||
+        []
+      )
+        .map(
+          normalizePoint
         )
-      : '—';
+        .filter(Boolean);
 
-  const chartHeight = Math.max(
-    Number(height) || 430,
-    330
-  );
+    if (
+      normalized.length
+    ) {
+      setLocalPoints(
+        normalized.slice(
+          -120
+        )
+      );
+    }
+  }, [
+    tickHistory,
+    symbol,
+  ]);
 
-  const retry = () => {
-    setError('');
-    setStatus('idle');
-    setSmartChart(null);
+  useEffect(() => {
+    const liveQuote =
+      Number(quote);
 
-    setRetryKey(
-      (value) => value + 1
+    if (
+      !Number.isFinite(
+        liveQuote
+      )
+    ) {
+      return;
+    }
+
+    setLocalPoints(
+      (current) => {
+        const next =
+          [
+            ...current,
+            {
+              quote:
+                liveQuote,
+              epoch:
+                Date.now() /
+                1000,
+            },
+          ];
+
+        return next.slice(
+          -120
+        );
+      }
     );
-  };
+  }, [quote]);
+
+  const chart =
+    useMemo(
+      () =>
+        buildPath(
+          localPoints,
+          size.width,
+          size.height,
+          22
+        ),
+      [
+        localPoints,
+        size,
+      ]
+    );
+
+  const latest =
+    localPoints[
+      localPoints.length -
+        1
+    ]?.quote;
+
+  const first =
+    localPoints[0]
+      ?.quote;
+
+  const positive =
+    Number.isFinite(
+      latest
+    ) &&
+    Number.isFinite(
+      first
+    )
+      ? latest >= first
+      : true;
+
+  const lineColor =
+    positive
+      ? '#22d3a5'
+      : '#ff5f6d';
+
+  const currentPrice =
+    Number.isFinite(
+      Number(quote)
+    )
+      ? Number(quote)
+      : latest;
+
+  const change =
+    Number.isFinite(
+      latest
+    ) &&
+    Number.isFinite(
+      first
+    )
+      ? latest - first
+      : null;
+
+  const changePct =
+    Number.isFinite(
+      change
+    ) &&
+    Number.isFinite(
+      first
+    ) &&
+    first !== 0
+      ? (
+          change /
+          first
+        ) * 100
+      : null;
 
   return (
-    <>
-      <link
-        rel="stylesheet"
-        href="/smartcharts/smartcharts.css"
-      />
-
-      <section
-        className={className}
+    <section
+      className={
+        className
+      }
+      style={{
+        width: '100%',
+        overflow: 'hidden',
+        borderRadius: 18,
+        border:
+          '1px solid #1d2a3d',
+        background:
+          '#080d14',
+      }}
+    >
+      <div
         style={{
-          width: '100%',
-          overflow: 'hidden',
-          borderRadius: 18,
-          border:
-            '1px solid #1d2a3d',
+          minHeight: 64,
+          padding:
+            '12px 14px',
+          display: 'flex',
+          alignItems:
+            'center',
+          justifyContent:
+            'space-between',
+          gap: 12,
+          flexWrap:
+            'wrap',
           background:
-            '#080d14',
+            '#0c131f',
+          borderBottom:
+            '1px solid #172235',
         }}
       >
         <div
           style={{
-            minHeight: 64,
-            padding:
-              '12px 14px',
+            minWidth: 0,
             display: 'flex',
             alignItems:
               'center',
-            justifyContent:
-              'space-between',
-            gap: 12,
-            flexWrap:
-              'wrap',
-            background:
-              '#0c131f',
-            borderBottom:
-              '1px solid #172235',
+            gap: 11,
           }}
         >
           <div
             style={{
-              minWidth: 0,
-              display: 'flex',
-              alignItems:
+              width: 36,
+              height: 36,
+              display:
+                'grid',
+              placeItems:
                 'center',
-              gap: 11,
+              borderRadius:
+                10,
+              background:
+                '#111d2d',
+              border:
+                '1px solid #24334a',
+              color:
+                '#ff4758',
+              fontWeight:
+                900,
             }}
           >
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                flex: '0 0 auto',
-                display: 'grid',
-                placeItems:
-                  'center',
-                borderRadius:
-                  10,
-                background:
-                  '#111d2d',
-                border:
-                  '1px solid #24334a',
-                color:
-                  '#ff4758',
-                fontWeight:
-                  900,
-              }}
-            >
-              ∿
-            </div>
-
-            <div
-              style={{
-                minWidth: 0,
-              }}
-            >
-              <div
-                style={{
-                  overflow:
-                    'hidden',
-                  textOverflow:
-                    'ellipsis',
-                  whiteSpace:
-                    'nowrap',
-                  color:
-                    '#f8fafc',
-                  fontSize: 14,
-                  fontWeight:
-                    900,
-                }}
-              >
-                {displayName}
-              </div>
-
-              <div
-                style={{
-                  marginTop: 3,
-                  display: 'flex',
-                  alignItems:
-                    'center',
-                  gap: 7,
-                  color:
-                    '#718096',
-                  fontSize: 11,
-                  fontWeight:
-                    700,
-                }}
-              >
-                <span
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius:
-                      '50%',
-                    background:
-                      '#22d3a5',
-                  }}
-                />
-
-                LIVE
-
-                <span>•</span>
-
-                {symbol}
-              </div>
-            </div>
+            ∿
           </div>
 
           <div
             style={{
-              padding:
-                '7px 11px',
-              borderRadius:
-                9,
-              border:
-                '1px solid #1e2b3f',
-              background:
-                '#070c13',
+              minWidth: 0,
+            }}
+          >
+            <div
+              style={{
+                overflow:
+                  'hidden',
+                textOverflow:
+                  'ellipsis',
+                whiteSpace:
+                  'nowrap',
+                color:
+                  '#f8fafc',
+                fontSize: 14,
+                fontWeight:
+                  900,
+              }}
+            >
+              {displayName}
+            </div>
+
+            <div
+              style={{
+                marginTop: 3,
+                display: 'flex',
+                alignItems:
+                  'center',
+                gap: 7,
+                color:
+                  '#718096',
+                fontSize: 11,
+                fontWeight:
+                  700,
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius:
+                    '50%',
+                  background:
+                    '#22d3a5',
+                }}
+              />
+
+              LIVE
+
+              <span>•</span>
+
+              {symbol}
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems:
+              'flex-end',
+            gap: 10,
+            flexWrap:
+              'wrap',
+          }}
+        >
+          <div
+            style={{
               color:
-                '#e8edf5',
-              fontSize: 13,
+                '#f8fafc',
+              fontSize: 18,
               fontWeight:
                 900,
               fontVariantNumeric:
                 'tabular-nums',
             }}
           >
-            {formattedQuote}
+            {formatPrice(
+              currentPrice,
+              pipSize
+            )}
           </div>
-        </div>
 
-        <div
+          {Number.isFinite(
+            changePct
+          ) && (
+            <div
+              style={{
+                color:
+                  positive
+                    ? '#22d3a5'
+                    : '#ff5f6d',
+                fontSize: 12,
+                fontWeight:
+                  900,
+              }}
+            >
+              {positive
+                ? '+'
+                : ''}
+              {changePct.toFixed(
+                2
+              )}
+              %
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div
+        ref={
+          containerRef
+        }
+        style={{
+          position:
+            'relative',
+          width: '100%',
+          height:
+            Math.max(
+              Number(height) ||
+                430,
+              320
+            ),
+          minHeight: 320,
+          background:
+            '#080d14',
+        }}
+      >
+        <svg
+          width="100%"
+          height="100%"
+          viewBox={`0 0 ${size.width} ${size.height}`}
+          preserveAspectRatio="none"
           style={{
             position:
-              'relative',
-            width: '100%',
-            height:
-              chartHeight,
-            minHeight: 330,
-            background:
-              '#080d14',
+              'absolute',
+            inset: 0,
+            display: 'block',
           }}
         >
-          {status !==
-            'ready' &&
-            status !==
-              'error' && (
-              <div
-                style={{
-                  position:
-                    'absolute',
-                  inset: 0,
-                  zIndex: 5,
-                  display:
-                    'grid',
-                  placeItems:
-                    'center',
-                  background:
-                    '#080d14',
-                }}
-              >
-                <div
-                  style={{
-                    textAlign:
-                      'center',
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 28,
-                      height: 28,
-                      margin:
-                        '0 auto 12px',
-                      borderRadius:
-                        '50%',
-                      border:
-                        '3px solid #243248',
-                      borderTopColor:
-                        '#ff4758',
-                      animation:
-                        'binaryspot-chart-spin 0.8s linear infinite',
-                    }}
-                  />
+          <defs>
+            <linearGradient
+              id="binaryspot-fill"
+              x1="0"
+              y1="0"
+              x2="0"
+              y2="1"
+            >
+              <stop
+                offset="0%"
+                stopColor={
+                  lineColor
+                }
+                stopOpacity="0.22"
+              />
 
-                  <div
-                    style={{
-                      color:
-                        '#9aa8bb',
-                      fontSize: 13,
-                      fontWeight:
-                        800,
-                    }}
-                  >
-                    Preparing Deriv
-                    chart…
-                  </div>
-                </div>
-              </div>
+              <stop
+                offset="100%"
+                stopColor={
+                  lineColor
+                }
+                stopOpacity="0"
+              />
+            </linearGradient>
+          </defs>
+
+          {[0.2, 0.4, 0.6, 0.8].map(
+            (ratio) => (
+              <line
+                key={
+                  ratio
+                }
+                x1="0"
+                x2={
+                  size.width
+                }
+                y1={
+                  size.height *
+                  ratio
+                }
+                y2={
+                  size.height *
+                  ratio
+                }
+                stroke="#182235"
+                strokeWidth="1"
+              />
+            )
+          )}
+
+          {chart.path && (
+            <>
+              <path
+                d={`${chart.path} L ${size.width - 22} ${size.height - 22} L 22 ${size.height - 22} Z`}
+                fill="url(#binaryspot-fill)"
+                stroke="none"
+              />
+
+              <path
+                d={
+                  chart.path
+                }
+                fill="none"
+                stroke={
+                  lineColor
+                }
+                strokeWidth="2.4"
+                vectorEffect="non-scaling-stroke"
+              />
+            </>
+          )}
+        </svg>
+
+        {!chart.path && (
+          <div
+            style={{
+              position:
+                'absolute',
+              inset: 0,
+              display:
+                'grid',
+              placeItems:
+                'center',
+              color:
+                '#748197',
+              fontSize: 13,
+              fontWeight:
+                800,
+            }}
+          >
+            Waiting for live ticks…
+          </div>
+        )}
+
+        {chart.max !==
+          null && (
+          <div
+            style={{
+              position:
+                'absolute',
+              top: 12,
+              right: 12,
+              color:
+                '#6f7d92',
+              fontSize: 10,
+              fontWeight:
+                700,
+            }}
+          >
+            HIGH{' '}
+            {formatPrice(
+              chart.max,
+              pipSize
             )}
+          </div>
+        )}
 
-          {status ===
-            'error' && (
-              <div
-                style={{
-                  position:
-                    'absolute',
-                  inset: 0,
-                  zIndex: 6,
-                  display:
-                    'grid',
-                  placeItems:
-                    'center',
-                  padding: 22,
-                  background:
-                    '#080d14',
-                }}
-              >
-                <div
-                  style={{
-                    maxWidth:
-                      430,
-                    textAlign:
-                      'center',
-                  }}
-                >
-                  <div
-                    style={{
-                      color:
-                        '#f8fafc',
-                      fontSize: 16,
-                      fontWeight:
-                        900,
-                    }}
-                  >
-                    Deriv chart
-                    couldn't load
-                  </div>
-
-                  <div
-                    style={{
-                      marginTop: 8,
-                      color:
-                        '#7f8da3',
-                      fontSize: 12,
-                      lineHeight:
-                        1.6,
-                    }}
-                  >
-                    {error}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={retry}
-                    style={{
-                      marginTop:
-                        16,
-                      minHeight:
-                        38,
-                      padding:
-                        '0 16px',
-                      border: 0,
-                      borderRadius:
-                        9,
-                      background:
-                        '#ff4758',
-                      color:
-                        '#fff',
-                      fontWeight:
-                        900,
-                    }}
-                  >
-                    Retry chart
-                  </button>
-                </div>
-              </div>
+        {chart.min !==
+          null && (
+          <div
+            style={{
+              position:
+                'absolute',
+              bottom: 12,
+              right: 12,
+              color:
+                '#6f7d92',
+              fontSize: 10,
+              fontWeight:
+                700,
+            }}
+          >
+            LOW{' '}
+            {formatPrice(
+              chart.min,
+              pipSize
             )}
+          </div>
+        )}
+      </div>
 
-          {status ===
-            'ready' &&
-            SmartChart && (
-              <ChartErrorBoundary
-                resetKey={`${symbol}-${retryKey}`}
-              >
-                <SmartChart
-                  id="binaryspot-main-chart"
-                  symbol={symbol}
-                  granularity={
-                    DEFAULT_GRANULARITY
-                  }
-                  chartType="candle"
-                  getQuotes={
-                    getQuotes
-                  }
-                  subscribeQuotes={
-                    subscribeQuotes
-                  }
-                  unsubscribeQuotes={
-                    unsubscribeQuotes
-                  }
-                  chartData={{
-                    activeSymbols:
-                      normalizedSymbols,
-                  }}
-                  feedCall={{
-                    activeSymbols:
-                      false,
-                    tradingTimes:
-                      false,
-                  }}
-                  shouldFetchTradingTimes={
-                    false
-                  }
-                  isAnimationEnabled={
-                    false
-                  }
-                  enabledNavigationWidget={
-                    false
-                  }
-                  isLive
-                />
-              </ChartErrorBoundary>
-            )}
-        </div>
+      <div
+        style={{
+          minHeight: 38,
+          padding:
+            '7px 13px',
+          display: 'flex',
+          alignItems:
+            'center',
+          justifyContent:
+            'space-between',
+          gap: 10,
+          borderTop:
+            '1px solid #172235',
+          background:
+            '#0a111b',
+          color:
+            '#64748b',
+          fontSize: 10,
+          fontWeight:
+            800,
+        }}
+      >
+        <span>
+          BINARYSPOT LIVE CHART
+        </span>
 
-        <div
-          style={{
-            minHeight: 36,
-            padding:
-              '7px 13px',
-            display: 'flex',
-            alignItems:
-              'center',
-            justifyContent:
-              'space-between',
-            gap: 10,
-            borderTop:
-              '1px solid #172235',
-            background:
-              '#0a111b',
-            color:
-              '#64748b',
-            fontSize: 10,
-            fontWeight:
-              800,
-          }}
-        >
-          <span>
-            DERIV MARKET DATA
-          </span>
-
-          <span>
-            1 MIN • CANDLES
-          </span>
-        </div>
-
-        <style jsx>{`
-          @keyframes binaryspot-chart-spin {
-            from {
-              transform: rotate(0deg);
-            }
-
-            to {
-              transform: rotate(360deg);
-            }
-          }
-
-          @media (max-width: 640px) {
-            section {
-              border-radius: 14px !important;
-            }
-          }
-        `}</style>
-      </section>
-    </>
+        <span>
+          {localPoints.length} TICKS
+        </span>
+      </div>
+    </section>
   );
 }
