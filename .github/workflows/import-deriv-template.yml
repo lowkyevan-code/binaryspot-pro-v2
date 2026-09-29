@@ -44,4 +44,4 @@ jobs:
           git add -A
           if git diff --cached --quiet; then exit 0; fi
           git commit -m "chore: import official Deriv trading bot template [skip ci]"
-          git push origin HEAD:binaryspot-deriv-builder
+          git push origin HEAD:binaryspot-deriv-builder\n\n      # v2: keep upstream GitHub workflow files out of the migration commit
