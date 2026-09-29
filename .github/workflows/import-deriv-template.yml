@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   import-template:
@@ -46,8 +47,11 @@ jobs:
           git commit -m "chore: import official Deriv trading bot template [skip ci]"
 
       - name: Push imported template
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-          git push --verbose origin HEAD:binaryspot-deriv-builder
+          git config --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --verbose origin HEAD:refs/heads/binaryspot-deriv-builder
 
-      # v4: commit and push separated for diagnostics
+      # v5: clear checkout auth header and push with explicit token
