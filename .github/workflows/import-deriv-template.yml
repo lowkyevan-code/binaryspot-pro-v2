@@ -1,0 +1,47 @@
+name: Import Deriv Trading Bot Template
+
+on:
+  push:
+    branches:
+      - binaryspot-deriv-builder
+    paths:
+      - .github/workflows/import-deriv-template.yml
+
+permissions:
+  contents: write
+
+jobs:
+  import-template:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout BinarySpot build branch
+        uses: actions/checkout@v4
+        with:
+          ref: binaryspot-deriv-builder
+          fetch-depth: 0
+
+      - name: Preserve BinarySpot assets
+        run: |
+          mkdir -p /tmp/binaryspot-preserve
+          if [ -d public/bots ]; then cp -R public/bots /tmp/binaryspot-preserve/bots; fi
+          if [ -f brand.config.binaryspot.json ]; then cp brand.config.binaryspot.json /tmp/binaryspot-preserve/brand.config.json; fi
+          if [ -f vercel.deriv-builder.json ]; then cp vercel.deriv-builder.json /tmp/binaryspot-preserve/vercel.json; fi
+
+      - name: Import official Deriv template
+        run: |
+          git clone --depth 1 https://github.com/deriv-com/trading-bot-template.git /tmp/deriv-template
+          rsync -a --delete --exclude='.git' --exclude='.github/workflows/import-deriv-template.yml' /tmp/deriv-template/ ./
+          mkdir -p .github/workflows
+          cp "$GITHUB_WORKSPACE/.github/workflows/import-deriv-template.yml" /tmp/import-workflow.yml 2>/dev/null || true
+          if [ -d /tmp/binaryspot-preserve/bots ]; then mkdir -p public && cp -R /tmp/binaryspot-preserve/bots public/bots; fi
+          if [ -f /tmp/binaryspot-preserve/brand.config.json ]; then cp /tmp/binaryspot-preserve/brand.config.json brand.config.json; fi
+          if [ -f /tmp/binaryspot-preserve/vercel.json ]; then cp /tmp/binaryspot-preserve/vercel.json vercel.json; fi
+
+      - name: Commit imported template
+        run: |
+          git config user.name "BinarySpot Builder"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "chore: import official Deriv trading bot template [skip ci]"
+          git push origin HEAD:binaryspot-deriv-builder
